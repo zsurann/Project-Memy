@@ -22,7 +22,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Test
-        run: ./gradlew :app:testDebugUnitTest --tests 'com.nexa.assistant.agent.*' --tests 'com.nexa.assistant.speech.*' --tests 'com.nexa.assistant.tools.*'
+        run: ./gradlew :app:testDebugUnitTest --tests 'com.nexa.assistant.agent.*' --tests 'com.nexa.assistant.speech.*' --tests 'com.nexa.assistant.tools.*' --tests 'com.nexa.assistant.ConfirmationTest'
 
       - name: Compila APK
         run: ./gradlew :app:assembleRelease

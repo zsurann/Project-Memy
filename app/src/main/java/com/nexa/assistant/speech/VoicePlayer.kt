@@ -9,11 +9,11 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import com.nexa.assistant.data.MemySettings
-import com.nexa.assistant.data.VoiceModel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -31,24 +31,24 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 
-/** Stato dell'elenco voci mostrato nelle impostazioni. */
+/** Elenco delle voci mostrato nelle impostazioni. */
 data class VoiceCatalog(
     val loading: Boolean = false,
-    val voices: List<ElevenVoice> = emptyList(),
-    val usage: ElevenUsage? = null,
+    val voices: List<EdgeVoice> = VoicePlayer.ITALIAN_VOICES,
     val error: String? = null,
 )
 
 /**
- * La voce di Memy, con ElevenLabs. Le frasi arrivano una alla volta (mentre Claude scrive) e vengono
- * lette in ordine; la frase successiva viene preparata mentre si sta leggendo quella attuale.
+ * La voce di Memy: voci neurali di Microsoft Edge, gratuite.
  *
- * Se manca la chiave o ElevenLabs non risponde, per non restare muta usa la sintesi del telefono.
+ * Le frasi arrivano una alla volta (mentre Claude scrive) e vengono lette in ordine;
+ * la frase successiva viene preparata mentre si legge quella attuale, così non ci sono pause.
+ * Solo se il servizio Edge non risponde (es. niente internet) si usa la voce del telefono, per non restare muta.
  */
 class VoicePlayer(
     private val context: Context,
     private val settings: MemySettings,
-    private val api: ElevenLabs = ElevenLabs(),
+    private val edge: EdgeTts = EdgeTts(),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audio = context.getSystemService(AudioManager::class.java)
@@ -59,26 +59,16 @@ class VoicePlayer(
     private val _catalog = MutableStateFlow(VoiceCatalog())
     val catalog: StateFlow<VoiceCatalog> = _catalog.asStateFlow()
 
-    /** Solo per gli screenshot di prova. */
-    @androidx.annotation.VisibleForTesting
-    internal fun setPreviewCatalog(catalog: VoiceCatalog, previewingId: String?) {
-        _catalog.value = catalog
-        _previewing.value = previewingId
-    }
+    /** Voce di cui si sta ascoltando l'anteprima, e se l'audio è ancora in preparazione. */
+    data class Preview(val voiceId: String, val loading: Boolean)
 
-    /** ID della voce di cui si sta ascoltando l'anteprima (per animare il pulsante). */
-    private val _previewing = MutableStateFlow<String?>(null)
-    val previewing: StateFlow<String?> = _previewing.asStateFlow()
+    private val _preview = MutableStateFlow<Preview?>(null)
+    val preview: StateFlow<Preview?> = _preview.asStateFlow()
 
-    /** Avviso (al massimo uno al minuto) quando ElevenLabs fallisce e si usa la voce del telefono. */
+    /** Avviso (al massimo uno al minuto) quando il servizio vocale non risponde. */
     var onFallback: ((String) -> Unit)? = null
 
-    private sealed interface Item {
-        val gen: Int
-        val text: String
-        data class Cloud(override val gen: Int, override val text: String, val audio: Deferred<Result<File>>) : Item
-        data class Local(override val gen: Int, override val text: String) : Item
-    }
+    private data class Item(val gen: Int, val text: String, val audio: Deferred<Result<File>>)
 
     private val incoming = Channel<Pair<Int, String>>(Channel.UNLIMITED)
     private val prepared = Channel<Item>(capacity = 2)
@@ -88,6 +78,8 @@ class VoicePlayer(
     private var player: MediaPlayer? = null
     private var interruptPlayback: (() -> Unit)? = null
     private var previewPlayer: MediaPlayer? = null
+    private var previewJob: Job? = null
+    private val previewCache = mutableMapOf<String, File>()
     private var focus: AudioFocusRequest? = null
     private var lastFallbackNotice = 0L
 
@@ -95,6 +87,7 @@ class VoicePlayer(
     private val ttsReady = CompletableDeferred<Boolean>()
 
     init {
+        // Voce di riserva del telefono: si prepara subito, ma si usa solo se Edge non risponde.
         tts = TextToSpeech(context.applicationContext) { code ->
             val engine = tts
             val ok = code == TextToSpeech.SUCCESS && engine != null && run {
@@ -109,6 +102,7 @@ class VoicePlayer(
         }
         scope.launch { prepareLoop() }
         scope.launch { playLoop() }
+        cleanOldFiles()
     }
 
     private fun bestItalianVoice(engine: TextToSpeech): Voice? = runCatching {
@@ -117,61 +111,80 @@ class VoicePlayer(
             .maxWithOrNull(compareBy<Voice> { it.quality }.thenBy { if (it.locale.country == "IT") 1 else 0 })
     }.getOrNull()
 
-    // ------------------------------------------------------------------ elenco voci
+    /** File audio rimasti da una chiusura improvvisa dell'app. */
+    private fun cleanOldFiles() {
+        context.cacheDir.listFiles { f -> f.name.startsWith("voce-") && f.name.endsWith(".mp3") }?.forEach { it.delete() }
+    }
 
-    /** Scarica l'elenco delle voci e i crediti residui. Se non c'è una voce scelta, seleziona la prima gratuita. */
+    // ------------------------------------------------------------------ elenco voci e anteprime
+
+    /** Scarica l'elenco delle voci: tutte le italiane più le "multilingue", che parlano anche italiano. */
     fun refreshCatalog() {
-        val key = settings.elevenKey()
-        if (key.isNullOrBlank()) {
-            _catalog.value = VoiceCatalog()
-            return
-        }
         if (_catalog.value.loading) return
         _catalog.update { it.copy(loading = true, error = null) }
         scope.launch {
-            val voices = withContext(Dispatchers.IO) { runCatching { api.voices(key) } }
-            val usage = withContext(Dispatchers.IO) { runCatching { api.usage(key) }.getOrNull() }
-            voices.fold(
-                onSuccess = { list ->
-                    val sorted = list.sortedWith(compareBy<ElevenVoice> { !it.isFree }.thenBy { it.name })
-                    _catalog.value = VoiceCatalog(voices = sorted, usage = usage)
-                    val current = settings.state.value.voiceId
-                    if (sorted.isNotEmpty() && sorted.none { it.id == current }) {
-                        val first = sorted.first()
-                        settings.setVoice(first.id, first.name)
-                    }
+            val result = withContext(Dispatchers.IO) { runCatching { edge.voices() } }
+            _catalog.value = result.fold(
+                onSuccess = { all ->
+                    val italian = all.filter { it.isItalian }.sortedWith(compareBy({ it.gender }, { it.name }))
+                    val multi = all.filter { it.isMultilingual && !it.isItalian }.sortedWith(compareBy({ it.gender }, { it.name }))
+                    VoiceCatalog(voices = (italian + multi).ifEmpty { ITALIAN_VOICES })
                 },
-                onFailure = { e ->
-                    _catalog.update { it.copy(loading = false, usage = usage, error = "Non riesco a scaricare le voci: ${e.message}") }
-                },
+                onFailure = { e -> VoiceCatalog(error = "Non riesco a scaricare l'elenco completo: ${e.message}") },
             )
         }
     }
 
-    /** Riproduce (o ferma) l'anteprima gratuita di una voce: non consuma crediti. */
-    fun togglePreview(voice: ElevenVoice) {
-        val wasPlaying = _previewing.value == voice.id
+    /** Ascolta (o ferma) un'anteprima in italiano della voce: è gratuita. */
+    fun togglePreview(voice: EdgeVoice) {
+        val current = _preview.value
         stopPreview()
-        if (wasPlaying) return
-        val url = voice.previewUrl ?: return
+        if (current?.voiceId == voice.id) return
         stop()
-        val mp = MediaPlayer()
-        previewPlayer = mp
-        _previewing.value = voice.id
-        runCatching {
-            mp.setAudioAttributes(attributes)
-            mp.setDataSource(url)
-            mp.setOnPreparedListener { if (previewPlayer === mp) it.start() }
-            mp.setOnCompletionListener { if (previewPlayer === mp) stopPreview() }
-            mp.setOnErrorListener { _, _, _ -> if (previewPlayer === mp) stopPreview(); true }
-            mp.prepareAsync()
-        }.onFailure { stopPreview() }
+        _preview.value = Preview(voice.id, loading = true)
+        previewJob = scope.launch {
+            val s = settings.state.value
+            val file = previewCache[previewKey(voice.id, s.voiceRate, s.voicePitch)]?.takeIf { it.exists() }
+                ?: withContext(Dispatchers.IO) {
+                    runCatching {
+                        val bytes = edge.synthesize(previewText(voice), voice.id, s.voiceRate, s.voicePitch)
+                        File(context.cacheDir, "anteprima-${voice.id}-${s.voiceRate}-${s.voicePitch}.mp3").apply { writeBytes(bytes) }
+                    }.getOrNull()
+                }?.also { previewCache[previewKey(voice.id, s.voiceRate, s.voicePitch)] = it }
+            if (file == null) {
+                _preview.value = null
+                onFallback?.invoke("Anteprima non disponibile: controlla la connessione a internet.")
+                return@launch
+            }
+            if (_preview.value?.voiceId != voice.id) return@launch
+            val mp = MediaPlayer()
+            previewPlayer = mp
+            _preview.value = Preview(voice.id, loading = false)
+            runCatching {
+                mp.setAudioAttributes(attributes)
+                mp.setDataSource(file.absolutePath)
+                mp.setOnPreparedListener { if (previewPlayer === mp) it.start() }
+                mp.setOnCompletionListener { if (previewPlayer === mp) stopPreview() }
+                mp.setOnErrorListener { _, _, _ -> if (previewPlayer === mp) stopPreview(); true }
+                mp.prepareAsync()
+            }.onFailure { stopPreview() }
+        }
+    }
+
+    private fun previewKey(id: String, rate: Int, pitch: Int) = "$id|$rate|$pitch"
+
+    private fun previewText(v: EdgeVoice): String {
+        val name = settings.state.value.userName
+        return "Ciao${if (name.isNotBlank()) " $name" else ""}, sono Memy e questa è la voce di ${v.name}. " +
+            "Posso leggerti le notifiche, impostare promemoria e usare le app al posto tuo."
     }
 
     fun stopPreview() {
+        previewJob?.cancel()
+        previewJob = null
         previewPlayer?.runCatching { release() }
         previewPlayer = null
-        _previewing.value = null
+        _preview.value = null
     }
 
     // ------------------------------------------------------------------ parlare
@@ -179,7 +192,7 @@ class VoicePlayer(
     fun enqueue(text: String) {
         val clean = cleanForSpeech(text)
         if (clean.isBlank()) return
-        if (_previewing.value != null) scope.launch { stopPreview() }
+        if (_preview.value != null) scope.launch { stopPreview() }
         pending.update { it + 1 }
         incoming.trySend(generation to clean)
     }
@@ -208,22 +221,18 @@ class VoicePlayer(
         for ((gen, text) in incoming) {
             if (gen != generation) continue
             val s = settings.state.value
-            val key = settings.elevenKey()
-            val item = if (key.isNullOrBlank() || s.voiceId.isBlank()) Item.Local(gen, text) else {
-                Item.Cloud(gen, text, scope.async(Dispatchers.IO) {
-                    runCatching {
-                        val bytes = try {
-                            api.speak(text, key, s.voiceId, s.voiceModel, s.speechRate)
-                        } catch (e: ElevenLabsException) {
-                            // Un modello non incluso nel piano: riprova con quello base prima di arrendersi.
-                            if (s.voiceModel == VoiceModel.FLASH || e.code == 401 || e.code == 429) throw e
-                            api.speak(text, key, s.voiceId, VoiceModel.FLASH, s.speechRate)
-                        }
-                        File(context.cacheDir, "voce-${counter.incrementAndGet()}.mp3").apply { writeBytes(bytes) }
+            val job = scope.async(Dispatchers.IO) {
+                runCatching {
+                    val bytes = try {
+                        edge.synthesize(text, s.voiceId, s.voiceRate, s.voicePitch)
+                    } catch (e: EdgeTtsException) {
+                        // Un secondo tentativo risolve quasi sempre gli intoppi di rete momentanei.
+                        edge.synthesize(text, s.voiceId, s.voiceRate, s.voicePitch)
                     }
-                })
+                    File(context.cacheDir, "voce-${counter.incrementAndGet()}.mp3").apply { writeBytes(bytes) }
+                }
             }
-            prepared.send(item)
+            prepared.send(Item(gen, text, job))
         }
     }
 
@@ -231,31 +240,26 @@ class VoicePlayer(
         for (item in prepared) {
             try {
                 if (item.gen != generation) {
-                    (item as? Item.Cloud)?.audio?.let { d -> scope.launch { d.await().getOrNull()?.delete() } }
+                    scope.launch { item.audio.await().getOrNull()?.delete() }
                     continue
                 }
                 setSpeaking(true)
-                when (item) {
-                    is Item.Local -> playSystem(item.text)
-                    is Item.Cloud -> {
-                        val result = item.audio.await()
-                        if (item.gen != generation) {
-                            result.getOrNull()?.delete()
-                            continue
-                        }
-                        result.fold(
-                            onSuccess = { file -> playFile(file); file.delete() },
-                            onFailure = { e ->
-                                val now = System.currentTimeMillis()
-                                if (now - lastFallbackNotice > 60_000) {
-                                    lastFallbackNotice = now
-                                    onFallback?.invoke("Voce ElevenLabs non disponibile: ${e.message}. Uso la voce del telefono.")
-                                }
-                                playSystem(item.text)
-                            },
-                        )
-                    }
+                val result = item.audio.await()
+                if (item.gen != generation) {
+                    result.getOrNull()?.delete()
+                    continue
                 }
+                result.fold(
+                    onSuccess = { file -> playFile(file); file.delete() },
+                    onFailure = { e ->
+                        val now = System.currentTimeMillis()
+                        if (now - lastFallbackNotice > 60_000) {
+                            lastFallbackNotice = now
+                            onFallback?.invoke("Voce non disponibile (${e.message}). Uso per ora la voce del telefono.")
+                        }
+                        playSystem(item.text)
+                    },
+                )
             } finally {
                 if (item.gen == generation) {
                     pending.update { (it - 1).coerceAtLeast(0) }
@@ -291,13 +295,14 @@ class VoicePlayer(
     private suspend fun playSystem(text: String) {
         if (!ttsReady.await()) return
         val engine = tts ?: return
-        engine.setSpeechRate(settings.state.value.speechRate)
+        engine.setSpeechRate(1f + settings.state.value.voiceRate / 100f)
         val id = UUID.randomUUID().toString()
         suspendCancellableCoroutine { cont ->
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {}
                 override fun onDone(utteranceId: String?) { if (utteranceId == id && cont.isActive) cont.resume(Unit) }
                 @Deprecated("Deprecated in Java")
+                @Suppress("OVERRIDE_DEPRECATION")
                 override fun onError(utteranceId: String?) { if (utteranceId == id && cont.isActive) cont.resume(Unit) }
                 override fun onStop(utteranceId: String?, interrupted: Boolean) { if (utteranceId == id && cont.isActive) cont.resume(Unit) }
             })
@@ -326,7 +331,22 @@ class VoicePlayer(
         }
     }
 
+    /** Solo per gli screenshot di prova. */
+    @androidx.annotation.VisibleForTesting
+    internal fun setPreviewCatalog(catalog: VoiceCatalog, previewingId: String?) {
+        _catalog.value = catalog
+        _preview.value = previewingId?.let { Preview(it, loading = false) }
+    }
+
     companion object {
+        /** Le voci italiane di Edge: usate finché non arriva l'elenco completo dal servizio. */
+        val ITALIAN_VOICES = listOf(
+            EdgeVoice("it-IT-IsabellaNeural", "Isabella", "it-IT", "Female", listOf("Friendly", "Positive")),
+            EdgeVoice("it-IT-ElsaNeural", "Elsa", "it-IT", "Female", listOf("Friendly", "Positive")),
+            EdgeVoice("it-IT-DiegoNeural", "Diego", "it-IT", "Male", listOf("Friendly", "Positive")),
+            EdgeVoice("it-IT-GiuseppeMultilingualNeural", "Giuseppe", "it-IT", "Male", listOf("Friendly", "Positive")),
+        )
+
         /** Toglie simboli che suonano male letti ad alta voce. */
         fun cleanForSpeech(text: String): String = text
             .replace(Regex("\\[([^\\]]+)]\\([^)]+\\)"), "$1")

@@ -18,6 +18,10 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Ascolto anche fuori dall'app mentre Memy lavora per te -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
     <!-- Dati personali: usati solo quando lo chiedi a Memy -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
@@ -85,6 +89,11 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".MemySessionService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <receiver
             android:name=".update.UpdateReceiver"

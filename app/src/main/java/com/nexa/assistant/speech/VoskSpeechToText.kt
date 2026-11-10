@@ -56,6 +56,8 @@ class VoskSpeechToText(private val models: VoskModelManager) : SpeechToText {
             }
 
             listener.onReady()
+            // Se non dici niente entro qualche secondo, smette di ascoltare (non tiene il microfono aperto a vuoto).
+            scheduleFinalize(NO_SPEECH_MS)
             svc.startListening(object : RecognitionListener {
                 override fun onPartialResult(hypothesis: String?) {
                     val text = parse(hypothesis, "partial")
@@ -133,5 +135,6 @@ class VoskSpeechToText(private val models: VoskModelManager) : SpeechToText {
         const val SAMPLE_RATE = 16000f
         const val LISTEN_TIMEOUT_MS = 30_000
         const val END_SILENCE_MS = 1_100L
+        const val NO_SPEECH_MS = 8_000L
     }
 }

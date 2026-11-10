@@ -2,7 +2,7 @@
 
 Memy è un'assistente personale per Android. Le parli, il "cervello" (Claude di Anthropic) capisce cosa vuoi e Memy
 agisce sul telefono: apre e **usa le app al posto tuo**, legge e risponde alle notifiche, gestisce sveglie, calendario,
-promemoria, chiamate e messaggi. Poi ti risponde con una voce naturale di ElevenLabs.
+promemoria, chiamate e messaggi. Poi ti risponde con una voce neurale naturale e **gratuita** (Microsoft Edge).
 
 Pensata per l'installazione diretta tramite APK, senza Play Store, e compatibile con telefoni **senza servizi Google**
 (ad esempio vivo con OriginOS versione Cina).
@@ -28,14 +28,20 @@ Le azioni con effetti reali (inviare, chiamare, pagare, eliminare, pubblicare) c
 
 ```
 Microfono → riconoscimento vocale → Claude (in streaming, con strumenti e ricerca web)
-         → azioni sul telefono → voce ElevenLabs, frase per frase
+         → azioni sul telefono → voce neurale Edge, frase per frase
 ```
 
 - **Cervello**: Claude Opus 5.5, Sonnet 5.5 o Haiku 5.5, a scelta. Tutti possono cercare sul web.
-- **Voce**: ElevenLabs. Nelle impostazioni scegli la voce ascoltando le anteprime; quelle segnate "Gratuita"
-  funzionano con il piano gratuito. Se la chiave manca o i crediti finiscono, Memy usa la voce di riserva del telefono.
-- **Ascolto**: Google sul telefono (se presente), ElevenLabs Scribe (molto preciso, usa i crediti) oppure Vosk offline.
+- **Voce**: le voci neurali di Microsoft Edge (Isabella, Elsa, Diego, Giuseppe e le voci multilingue). Sono
+  gratuite, senza account né limiti di crediti. Nelle impostazioni le ascolti in anteprima e regoli velocità e tono.
+  È lo stesso servizio "Leggi ad alta voce" del browser Edge, usato con il protocollo della libreria open source
+  [edge-tts](https://github.com/rany2/edge-tts). Non è un'API ufficiale: se Microsoft la cambia, Memy usa per un momento
+  la voce del telefono finché non arriva un aggiornamento.
+- **Ascolto**: Google sul telefono (se presente) oppure Vosk offline.
 - **Conversazione continua**: dopo ogni risposta torna ad ascoltarti. Se tocchi la sfera mentre parla, la interrompi.
+- **Ti sente anche fuori dall'app**: durante una conversazione resta attivo un servizio con notifica "Memy". Così,
+  mentre lavora in un'altra app, puoi rispondere a voce alle sue domande e conferme. Si spegne da solo pochi secondi
+  dopo la fine della conversazione, oppure con il pulsante "Ferma" della notifica.
 
 ## I "poteri"
 
@@ -63,21 +69,17 @@ Su Android 13 e successivi, se l'interruttore dell'accessibilità è bloccato:
 
 ## Costi
 
-Servono due chiavi, che restano cifrate solo sul telefono:
-
-- **Claude (Anthropic)**, obbligatoria: <https://console.anthropic.com/settings/keys>. Si paga a consumo con una
-  ricarica prepagata; l'abbonamento Claude Pro non include l'API. Una risposta breve costa indicativamente
-  0,0005 $ con Haiku, 0,004 $ con Sonnet e 0,008 $ con Opus. I compiti in cui Memy usa un'app richiedono molti
-  passaggi e costano di più.
-- **ElevenLabs**, per la voce: <https://elevenlabs.io/app/settings/api-keys>. Il piano gratuito ha un numero limitato
-  di crediti al mese; i crediti rimasti si vedono in *Impostazioni → Voce*.
+Serve solo la chiave di **Claude (Anthropic)**: <https://console.anthropic.com/settings/keys>. Si paga a consumo con una
+ricarica prepagata; l'abbonamento Claude Pro non include l'API. Una risposta breve costa indicativamente 0,0005 $ con
+Haiku, 0,004 $ con Sonnet e 0,008 $ con Opus. I compiti in cui Memy usa un'app richiedono molti passaggi e costano di più.
+La voce e l'ascolto sono gratuiti.
 
 ## Installazione sul telefono
 
 1. Dal telefono apri la pagina *Releases* di questo repository ("Memy — ultima versione") e scarica `Memy.apk`.
 2. Apri il file e consenti l'installazione da questa fonte.
-3. Apri Memy e inserisci la chiave di Claude (*Impostazioni → Chiavi*).
-4. Aggiungi la chiave ElevenLabs e scegli la voce (*Impostazioni → Voce*).
+3. Apri Memy e inserisci la chiave di Claude (*Impostazioni → Chiave di Claude*).
+4. Scegli la voce ascoltando le anteprime (*Impostazioni → Voce*) e scarica il modello offline (*Impostazioni → Ascolto*).
 5. Attiva i poteri che vuoi (*Impostazioni → Poteri*).
 6. In *Impostazioni → Sempre pronta* segui i passaggi per OriginOS, così il telefono non chiude Memy.
 7. Aggiungi il riquadro **"Ehi Memy"** alle Impostazioni rapide: un tocco e Memy ti ascolta.
@@ -85,7 +87,8 @@ Servono due chiavi, che restano cifrate solo sul telefono:
 ## Aggiornamenti automatici
 
 Ogni push su GitHub compila l'APK e aggiorna la release "ultima-versione" (`Memy.apk` e `version.json`).
-All'apertura Memy controlla se c'è una versione più nuova, la scarica e la installa. La prima volta Android chiede di
+All'apertura Memy controlla se c'è una versione più nuova; con il Wi-Fi la scarica e la installa da sola, con i dati
+mobili mostra un avviso con il pulsante "Aggiorna". La prima volta Android chiede di
 consentire a Memy di installare app.
 
 ## Note sul cambio di nome
@@ -102,6 +105,7 @@ Servono JDK 17 o successivo e l'SDK Android (piattaforma 36).
 ```bash
 ./gradlew :app:testDebugUnitTest --tests 'com.nexa.assistant.agent.*' --tests 'com.nexa.assistant.speech.*' --tests 'com.nexa.assistant.tools.*'
 ./gradlew :app:testDebugUnitTest --tests '*ScreenshotTest*'   # immagini dell'interfaccia in app/build/screenshots
+EDGE_LIVE=1 ./gradlew :app:testDebugUnitTest --tests '*EdgeTtsTest*'   # prova reale della voce Edge (serve internet)
 ./gradlew :app:assembleRelease                                # APK in app/build/outputs/apk/release/
 ```
 
@@ -115,10 +119,11 @@ personale va bene, ma puoi sostituirla impostando `NEXA_KEYSTORE_PASSWORD`, `NEX
 ```
 app/src/main/java/com/nexa/assistant/
 ├── MemyApp.kt, MemyController.kt, MainActivity.kt, MemyTileService.kt
+├── MemySessionService.kt  # microfono attivo anche fuori dall'app durante una conversazione
 ├── agent/      # Ciclo con Claude in streaming, prompt di sistema, divisione in frasi
 ├── tools/      # Strumenti: base, schermo, notifiche, dati personali, sistema
 ├── access/     # Servizio di accessibilità e lettura delle notifiche
-├── speech/     # ElevenLabs (voce, voci, Scribe), Vosk, riconoscimento di sistema
+├── speech/     # Voce Edge (EdgeTts + VoicePlayer), Vosk, riconoscimento di sistema
 ├── reminders/  # Promemoria
 ├── update/     # Aggiornamento automatico da GitHub
 ├── data/       # Impostazioni, memoria, chiavi cifrate

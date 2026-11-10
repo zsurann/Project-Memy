@@ -12,8 +12,7 @@ import com.nexa.assistant.ChatLine
 import com.nexa.assistant.MemyApp
 import com.nexa.assistant.Phase
 import com.nexa.assistant.UiState
-import com.nexa.assistant.speech.ElevenUsage
-import com.nexa.assistant.speech.ElevenVoice
+import com.nexa.assistant.speech.EdgeVoice
 import com.nexa.assistant.speech.VoiceCatalog
 import org.junit.Rule
 import org.junit.Test
@@ -47,11 +46,10 @@ class ScreenshotTest {
         File(dir, "$name.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
-    /** Simula chiavi già salvate (il vero salvataggio usa il Keystore di Android, assente nei test). */
-    private fun pretendKeys(eleven: Boolean) {
-        app.getSharedPreferences("nexa_settings", Context.MODE_PRIVATE).edit()
-            .putString("api_key_enc", "x").apply { if (eleven) putString("eleven_key_enc", "x") }.commit()
-        app.settings.setVoice("v1", "Sarah")
+    /** Simula la chiave già salvata (il vero salvataggio usa il Keystore di Android, assente nei test). */
+    private fun pretendKeys() {
+        app.getSharedPreferences("nexa_settings", Context.MODE_PRIVATE).edit().putString("api_key_enc", "x").commit()
+        app.settings.setVoice("it-IT-IsabellaNeural", "Isabella")
         app.settings.setUserName("Genny")
     }
 
@@ -62,12 +60,12 @@ class ScreenshotTest {
     }
 
     @Test fun homeEmpty() {
-        pretendKeys(eleven = true)
+        pretendKeys()
         shot("home") { HomeScreen(app, {}, {}) }
     }
 
     @Test fun homeChat() {
-        pretendKeys(eleven = true)
+        pretendKeys()
         app.controller.setPreviewState(
             UiState(
                 phase = Phase.THINKING,
@@ -84,10 +82,10 @@ class ScreenshotTest {
     }
 
     @Test fun homeListening() {
-        pretendKeys(eleven = true)
+        pretendKeys()
         app.controller.setPreviewState(
             UiState(
-                phase = Phase.LISTENING, listenerName = "ElevenLabs Scribe", partial = "che tempo fa",
+                phase = Phase.LISTENING, listenerName = "Offline (Vosk)", partial = "che tempo fa",
                 lines = listOf(ChatLine(1, true, "Ciao Memy, come stai?"), ChatLine(2, false, "Ciao Genny! Sto benissimo, grazie. Tu come stai?")),
             ),
             0.8f,
@@ -96,7 +94,7 @@ class ScreenshotTest {
     }
 
     @Test fun settingsCollapsed() {
-        pretendKeys(eleven = true)
+        pretendKeys()
         previewExpandAllSections = false
         shot("settings") { SettingsScreen(app) {} }
     }
@@ -104,24 +102,19 @@ class ScreenshotTest {
     @Test
     @Config(sdk = [35], qualifiers = "w411dp-h4300dp-xxhdpi")
     fun settingsExpanded() {
-        pretendKeys(eleven = true)
+        pretendKeys()
         app.memory.add("La sorella di Genny si chiama Giulia")
         app.memory.add("Preferisce il caffè senza zucchero")
-        fun v(id: String, name: String, g: String, style: String, accent: String, free: Boolean = true) =
-            ElevenVoice(id, name, if (free) "premade" else "cloned", g, accent, "young", style, "https://x/$id.mp3")
         app.controller.voice.setPreviewCatalog(
             VoiceCatalog(
-                voices = listOf(
-                    v("v1", "Sarah", "female", "professional", "american"),
-                    v("v2", "Laura", "female", "sassy", "american"),
-                    v("v3", "George", "male", "warm", "british"),
-                    v("v4", "Charlie", "male", "hyped", "australian"),
-                    v("v5", "La mia voce", "male", "", "italian", free = false),
+                voices = com.nexa.assistant.speech.VoicePlayer.ITALIAN_VOICES + listOf(
+                    EdgeVoice("en-US-AvaMultilingualNeural", "Ava", "en-US", "Female", listOf("Expressive", "Caring")),
+                    EdgeVoice("fr-FR-RemyMultilingualNeural", "Remy", "fr-FR", "Male", listOf("Friendly")),
                 ),
-                usage = ElevenUsage("free", 3200, 10000),
             ),
-            previewingId = "v3",
+            previewingId = "it-IT-DiegoNeural",
         )
+        app.settings.setVoiceRate(10)
         previewExpandAllSections = true
         try {
             shot("settings-full") { SettingsScreen(app) {} }

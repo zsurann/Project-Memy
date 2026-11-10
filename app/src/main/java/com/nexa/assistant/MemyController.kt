@@ -6,8 +6,6 @@ import androidx.core.content.ContextCompat
 import com.nexa.assistant.access.MemyAccessibilityService
 import com.nexa.assistant.agent.MemyAgent
 import com.nexa.assistant.data.SttEngine
-import com.nexa.assistant.speech.CloudSpeechToText
-import com.nexa.assistant.speech.ElevenLabs
 import com.nexa.assistant.speech.SpeechToText
 import com.nexa.assistant.speech.SystemSpeechToText
 import com.nexa.assistant.speech.VoicePlayer
@@ -27,6 +25,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -66,16 +66,14 @@ class MemyController(private val app: MemyApp) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val settings get() = app.settings
     private val ids = AtomicLong()
-    private val eleven = ElevenLabs()
 
     private val voskModels = VoskModelManager(app)
     private val vosk = VoskSpeechToText(voskModels)
     val googleDevice = SystemSpeechToText(app, googleOnly = true)
     private val anySystem = SystemSpeechToText(app, googleOnly = false)
-    private val scribe = CloudSpeechToText("ElevenLabs Scribe", { settings.elevenKey() }) { wav, key -> eleven.transcribe(wav, key) }
     private var activeStt: SpeechToText? = null
 
-    val voice = VoicePlayer(app, settings, eleven).also { v ->
+    val voice = VoicePlayer(app, settings).also { v ->
         v.onFallback = { msg -> scope.launch { notice(msg) } }
     }
 
@@ -86,7 +84,7 @@ class MemyController(private val app: MemyApp) {
     private val _level = MutableStateFlow(0f)
     val level: StateFlow<Float> = _level.asStateFlow()
 
-    /** L'app è visibile? Il microfono si può usare solo in primo piano. */
+    /** L'app è visibile sullo schermo? */
     var inForeground = false
         set(value) {
             field = value
@@ -97,6 +95,7 @@ class MemyController(private val app: MemyApp) {
     /** Claude sta ancora lavorando (a differenza di [job], che resta attivo finché Memy finisce di parlare). */
     private var agentBusy = false
     private var confirmation: CompletableDeferred<Boolean>? = null
+    private var sessionEndJob: Job? = null
 
     private val agent = MemyAgent(
         basicTools(app) + screenTools() + notificationTools() + dataTools(app, app.memory, app.reminders) + systemTools(app),
@@ -106,7 +105,6 @@ class MemyController(private val app: MemyApp) {
 
             override fun onToolUse(toolName: String) {
                 updateStreamingLine { it.copy(tool = toolName) }
-                scope.launch { updateOverlay() }
             }
 
             override fun onSentence(sentence: String) {
@@ -133,6 +131,21 @@ class MemyController(private val app: MemyApp) {
                 delay(50)
             }
         }
+        // A ogni cambio di stato: aggiorna l'indicatore sopra le altre app e la sessione di ascolto.
+        scope.launch {
+            _state.map { it.phase }.distinctUntilChanged().collect { phase ->
+                updateOverlay()
+                MemySessionService.update(app, sessionText(phase))
+                sessionEndJob?.cancel()
+                if (phase == Phase.IDLE && !agentBusy) {
+                    // Conversazione finita: dopo qualche secondo di calma si spegne il microfono in background.
+                    sessionEndJob = scope.launch {
+                        delay(SESSION_GRACE_MS)
+                        if (_state.value.phase == Phase.IDLE && !agentBusy) MemySessionService.stop(app)
+                    }
+                }
+            }
+        }
         voice.refreshCatalog()
     }
 
@@ -141,11 +154,28 @@ class MemyController(private val app: MemyApp) {
 
     /** Sceglie il motore di ascolto in base alle impostazioni e a cosa è disponibile. */
     fun resolveStt(): SpeechToText? = when (settings.state.value.sttEngine) {
-        // In automatico si preferiscono i motori gratuiti; Scribe solo se non c'è altro.
-        SttEngine.AUTO -> listOf(googleDevice, vosk, scribe, anySystem).firstOrNull { it.isReady() }
+        SttEngine.AUTO -> listOf(googleDevice, vosk, anySystem).firstOrNull { it.isReady() }
         SttEngine.GOOGLE_DEVICE -> googleDevice.takeIf { it.isReady() }
-        SttEngine.ELEVENLABS -> scribe.takeIf { it.isReady() }
         SttEngine.VOSK -> vosk.takeIf { it.isReady() }
+    }
+
+    /**
+     * Memy può usare il microfono: con l'app aperta sempre; fuori dall'app solo durante una conversazione,
+     * grazie al servizio in primo piano avviato quando l'app era visibile.
+     */
+    private fun canListen() = hasMicPermission() && (inForeground || MemySessionService.running)
+
+    /** Avvia la "sessione" che tiene vivo il microfono quando Memy lavora in un'altra app. */
+    private fun ensureSession() {
+        sessionEndJob?.cancel()
+        if (!MemySessionService.running && inForeground) MemySessionService.start(app, sessionText(_state.value.phase))
+    }
+
+    private fun sessionText(phase: Phase) = when (phase) {
+        Phase.LISTENING, Phase.CONFIRMING -> "Ti ascolto…"
+        Phase.PROCESSING, Phase.THINKING -> "Al lavoro per te"
+        Phase.SPEAKING -> "Sto rispondendo"
+        Phase.IDLE -> "Conversazione in corso"
     }
 
     // ------------------------------------------------------------------ ascolto
@@ -155,7 +185,7 @@ class MemyController(private val app: MemyApp) {
         when (_state.value.phase) {
             Phase.IDLE -> startListening()
             Phase.SPEAKING -> {
-                job?.cancel(); voice.stop(); finishStreamingLine()
+                job?.cancel(); voice.stop(); agentBusy = false; finishStreamingLine()
                 _state.update { it.copy(phase = Phase.IDLE) }
                 startListening()
             }
@@ -166,6 +196,7 @@ class MemyController(private val app: MemyApp) {
 
     fun startListening() {
         val stt = readyOrExplain() ?: return
+        ensureSession()
         voice.stop()
         voice.stopPreview()
         stopStt()
@@ -185,12 +216,14 @@ class MemyController(private val app: MemyApp) {
             }
 
             override fun onFinal(text: String) {
+                if (activeStt !== stt) return
                 activeStt = null
                 _state.update { it.copy(partial = "") }
                 if (text.isBlank()) _state.update { it.copy(phase = Phase.IDLE) } else submit(text)
             }
 
             override fun onError(message: String) {
+                if (activeStt !== stt) return
                 activeStt = null
                 notice(message)
                 _state.update { it.copy(phase = Phase.IDLE, partial = "") }
@@ -210,12 +243,13 @@ class MemyController(private val app: MemyApp) {
         if (!settings.state.value.hasApiKey) {
             notice("Inserisci prima la tua chiave API di Claude nelle impostazioni."); return null
         }
+        if (!canListen()) return null
         return resolveStt() ?: run {
             notice(
-                when (settings.state.value.sttEngine) {
-                    SttEngine.GOOGLE_DEVICE -> "Il riconoscimento di Google non è disponibile su questo telefono. Scegli un altro motore nelle impostazioni."
-                    SttEngine.ELEVENLABS -> "Inserisci la chiave ElevenLabs nelle impostazioni per usare Scribe."
-                    else -> "Configura l'ascolto nelle impostazioni: scarica il modello offline oppure aggiungi la chiave ElevenLabs."
+                if (settings.state.value.sttEngine == SttEngine.GOOGLE_DEVICE) {
+                    "Il riconoscimento di Google non è disponibile su questo telefono. Scegli un altro motore nelle impostazioni."
+                } else {
+                    "Per ascoltarti scarica il modello offline in Impostazioni → Ascolto (circa 50 MB, una volta sola)."
                 }
             )
             null
@@ -232,6 +266,7 @@ class MemyController(private val app: MemyApp) {
         if (key.isNullOrBlank()) {
             notice("Inserisci prima la tua chiave API di Claude nelle impostazioni."); return
         }
+        ensureSession()
         job?.cancel()
         confirmation?.complete(false)
         stopStt()
@@ -239,8 +274,8 @@ class MemyController(private val app: MemyApp) {
         finishStreamingLine()
         addLine(ChatLine(ids.incrementAndGet(), fromUser = true, text = clean))
         addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = "", streaming = true))
+        agentBusy = true
         job = scope.launch {
-            agentBusy = true
             _state.update { it.copy(phase = Phase.THINKING, partial = "") }
             val s = settings.state.value
             val reply = try {
@@ -253,14 +288,14 @@ class MemyController(private val app: MemyApp) {
                 "Si è verificato un errore imprevisto: ${e.message}".also { voice.enqueue(it) }
             }
             replaceStreamingLine(reply)
-            _state.update { it.copy(phase = if (voice.speaking.value) Phase.SPEAKING else it.phase) }
             agentBusy = false
+            _state.update { it.copy(phase = if (voice.speaking.value) Phase.SPEAKING else it.phase) }
             updateOverlay()
             voice.awaitIdle()
             _state.update { it.copy(phase = Phase.IDLE) }
-            if (settings.state.value.continuousConversation && inForeground) startListening()
+            // Conversazione continua: Memy torna ad ascoltarti, anche se sei in un'altra app.
+            if (settings.state.value.continuousConversation && canListen()) startListening()
         }
-        updateOverlay()
     }
 
     private inline fun editStreaming(s: UiState, change: (ChatLine) -> ChatLine?): UiState? {
@@ -284,11 +319,21 @@ class MemyController(private val app: MemyApp) {
         editStreaming(s) { if (it.text.isBlank()) null else it.copy(streaming = false, tool = null) } ?: s
     }
 
-    /** Mentre Memy lavora in un'altra app mostra un indicatore con cui fermarla. */
+    /** Quando Memy è fuori dalla sua app, mostra sopra le altre app cosa sta facendo, con un tocco per fermarla. */
     private fun updateOverlay() {
         val svc = MemyAccessibilityService.instance ?: return
-        if (agentBusy && !inForeground) svc.showStatus("✦ Memy al lavoro · tocca per fermare") { stopAll() }
-        else svc.hideStatus()
+        val phase = _state.value.phase
+        if (inForeground || (phase == Phase.IDLE && !agentBusy)) {
+            svc.hideStatus()
+            return
+        }
+        val text = when (phase) {
+            Phase.LISTENING -> "🎙 Ti ascolto… · tocca per fermare"
+            Phase.CONFIRMING -> "🎙 Rispondi sì o no"
+            Phase.SPEAKING -> "✦ Memy sta parlando · tocca per fermare"
+            else -> "✦ Memy al lavoro · tocca per fermare"
+        }
+        svc.showStatus(text) { stopAll() }
     }
 
     // ------------------------------------------------------------------ conferme
@@ -299,30 +344,42 @@ class MemyController(private val app: MemyApp) {
         voice.awaitIdle()
         _state.update { it.copy(phase = Phase.CONFIRMING, pendingConfirmation = prompt) }
 
+        // Fuori dall'app la domanda compare anche sopra l'app in uso, con i pulsanti.
         val svc = MemyAccessibilityService.instance
-        val answer = if (!inForeground && svc != null) {
-            // Memy sta lavorando in un'altra app: la domanda compare sopra quell'app, con i pulsanti.
-            voice.enqueue(prompt)
-            withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { svc.confirm(prompt, deferred) } ?: false
-        } else {
-            voice.speakNow(prompt)
-            // Dopo aver parlato, ascolta un "sì" o un "no" (i pulsanti funzionano comunque).
-            val stt = resolveStt()
-            if (!deferred.isCompleted && inForeground && hasMicPermission() && stt != null) {
+        val overlay = if (!inForeground && svc != null) scope.launch { svc.confirm(prompt, deferred) } else null
+
+        voice.speakNow(prompt)
+
+        // Poi Memy ascolta la risposta a voce, dentro o fuori dall'app. Se la risposta non è chiara, riprova.
+        var attempts = 0
+        val answer = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) {
+            while (!deferred.isCompleted && attempts < 3 && canListen()) {
+                val stt = resolveStt() ?: break
+                attempts++
+                val heard = CompletableDeferred<String>()
                 activeStt = stt
                 stt.start(object : SpeechToText.Listener {
                     override fun onLevel(level: Float) { _level.value = level }
                     override fun onPartial(text: String) { _state.update { it.copy(partial = text) } }
-                    override fun onFinal(text: String) {
-                        _state.update { it.copy(partial = "") }
-                        parseYesNo(text)?.let { deferred.complete(it) }
-                    }
-                    override fun onError(message: String) {}
+                    override fun onFinal(text: String) { heard.complete(text) }
+                    override fun onError(message: String) { heard.complete("") }
                 })
+                // Il primo che arriva vince: la voce oppure un tocco sui pulsanti.
+                val text = kotlinx.coroutines.selects.select {
+                    heard.onAwait { it }
+                    deferred.onAwait { "" }
+                }
+                stopStt()
+                _state.update { it.copy(partial = "") }
+                if (deferred.isCompleted) break
+                val parsed = parseYesNo(text)
+                if (parsed != null) deferred.complete(parsed)
+                else if (text.isNotBlank()) voice.speakNow("Scusa, non ho capito. Rispondi sì oppure no.")
             }
-            withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { deferred.await() } ?: false
-        }
+            deferred.await()
+        } ?: false
         deferred.complete(answer)
+        overlay?.cancel()
         stopStt()
         voice.stop()
         confirmation = null
@@ -335,17 +392,7 @@ class MemyController(private val app: MemyApp) {
         confirmation?.complete(yes)
     }
 
-    private fun parseYesNo(text: String): Boolean? {
-        val t = Normalizer.normalize(text.lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{M}"), "")
-        val words = t.split(Regex("[^a-z]+")).filter { it.isNotEmpty() }.toSet()
-        val no = setOf("no", "annulla", "stop", "aspetta", "fermo", "ferma", "lascia", "niente", "negativo")
-        val yes = setOf("si", "certo", "conferma", "confermo", "ok", "okay", "vai", "procedi", "esatto", "invia", "chiama", "sicuro", "giusto", "perfetto")
-        return when {
-            words.any { it in no } -> false
-            words.any { it in yes } -> true
-            else -> null
-        }
-    }
+    private fun parseYesNo(text: String): Boolean? = Companion.parseYesNo(text)
 
     // ------------------------------------------------------------------ varie
 
@@ -382,13 +429,6 @@ class MemyController(private val app: MemyApp) {
         }
     }
 
-    /** Fa dire a Memy una frase di prova con la voce scelta (consuma qualche credito ElevenLabs). */
-    fun testVoice() {
-        voice.stop()
-        val name = settings.state.value.userName
-        voice.enqueue("Ciao${if (name.isNotBlank()) " $name" else ""}, sono Memy. È così che suona la mia voce: ti piace?")
-    }
-
     private fun notice(text: String) = addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = text, isNotice = true))
 
     private fun addLine(line: ChatLine) {
@@ -402,8 +442,25 @@ class MemyController(private val app: MemyApp) {
         _level.value = level
     }
 
-    private companion object {
-        const val CONFIRM_TIMEOUT_MS = 45_000L
-        const val MAX_LINES = 200
+    companion object {
+        private const val CONFIRM_TIMEOUT_MS = 45_000L
+        private const val SESSION_GRACE_MS = 8_000L
+        private const val MAX_LINES = 200
+
+        /** Capisce un "sì" o un "no" detto a voce; null se la risposta non è chiara. */
+        internal fun parseYesNo(text: String): Boolean? {
+            val t = Normalizer.normalize(text.lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{M}"), "")
+            val words = t.split(Regex("[^a-z]+")).filter { it.isNotEmpty() }.toSet()
+            val no = setOf("no", "annulla", "stop", "aspetta", "fermo", "ferma", "lascia", "niente", "negativo", "nope")
+            val yes = setOf(
+                "si", "certo", "conferma", "confermo", "ok", "okay", "vai", "procedi", "esatto", "invia", "chiama",
+                "sicuro", "giusto", "perfetto", "fallo", "certamente", "assolutamente", "yes",
+            )
+            return when {
+                words.any { it in no } -> false
+                words.any { it in yes } -> true
+                else -> null
+            }
+        }
     }
 }

@@ -135,6 +135,10 @@ class MemyAgent(
         } catch (e: CancellationException) {
             rollback(checkpoint)
             throw e
+        } catch (e: Exception) {
+            // Qualsiasi altro imprevisto: la cronologia torna valida, così la conversazione può continuare.
+            rollback(checkpoint)
+            throw AgentException("Si è verificato un errore imprevisto: ${e.message}")
         }
     }
 

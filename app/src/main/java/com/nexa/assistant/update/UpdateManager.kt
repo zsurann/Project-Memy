@@ -55,8 +55,12 @@ class UpdateManager(private val context: Context, private val settings: MemySett
     suspend fun checkInBackground() {
         if (System.currentTimeMillis() - settings.lastUpdateCheck < 30 * 60_000L) return
         val rel = check() ?: return
-        if (settings.state.value.autoUpdate) downloadAndInstall(rel)
+        // In automatico scarica solo con Wi-Fi (l'APK pesa circa 45 MB); con i dati mobili resta l'avviso con il pulsante.
+        if (settings.state.value.autoUpdate && !isMetered()) downloadAndInstall(rel)
     }
+
+    private fun isMetered(): Boolean =
+        context.getSystemService(android.net.ConnectivityManager::class.java)?.isActiveNetworkMetered ?: true
 
     suspend fun check(): Release? = withContext(Dispatchers.IO) {
         _state.value = State.Checking

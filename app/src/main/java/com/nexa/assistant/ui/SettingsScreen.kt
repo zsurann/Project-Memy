@@ -52,12 +52,12 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -95,11 +95,10 @@ import com.nexa.assistant.MemyApp
 import com.nexa.assistant.access.Capabilities
 import com.nexa.assistant.data.ClaudeModel
 import com.nexa.assistant.data.SttEngine
-import com.nexa.assistant.data.VoiceModel
-import com.nexa.assistant.speech.ElevenVoice
+import com.nexa.assistant.speech.EdgeVoice
+import com.nexa.assistant.speech.VoicePlayer
 import com.nexa.assistant.update.UpdateManager
 import kotlinx.coroutines.launch
-import java.text.NumberFormat
 import java.util.Locale
 
 @Composable
@@ -148,33 +147,21 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                     }
                 }
 
-                // ------------------------------------------------ Chiavi
+                // ------------------------------------------------ Chiave
                 SectionCard(
-                    Icons.Filled.Key, "Chiavi",
-                    when {
-                        !settings.hasApiKey -> "Manca la chiave di Claude"
-                        !settings.hasElevenKey -> "Claude ✓ · ElevenLabs da aggiungere"
-                        else -> "Claude ✓ · ElevenLabs ✓"
-                    },
+                    Icons.Filled.Key, "Chiave di Claude",
+                    if (settings.hasApiKey) "Salvata ✓" else "Serve per iniziare",
                     initiallyExpanded = !settings.hasApiKey, attention = !settings.hasApiKey,
                 ) {
                     SecretField(
-                        title = "Claude (Anthropic) — il cervello",
+                        title = "Claude (Anthropic) — il cervello di Memy",
                         saved = settings.hasApiKey,
                         placeholder = "sk-ant-…",
                         onSave = app.settings::setApiKey,
                         onHelp = { context.openUrl("https://console.anthropic.com/settings/keys") },
                         required = true,
                     )
-                    SecretField(
-                        title = "ElevenLabs — la voce",
-                        saved = settings.hasElevenKey,
-                        placeholder = "sk_…",
-                        onSave = { app.settings.setElevenKey(it); app.controller.voice.refreshCatalog() },
-                        onHelp = { context.openUrl("https://elevenlabs.io/app/settings/api-keys") },
-                        note = "Il piano gratuito basta per iniziare. Quando crei la chiave lascia attivi i permessi per sintesi vocale, voci e trascrizione.",
-                    )
-                    Hint("Le chiavi restano cifrate solo su questo telefono.")
+                    Hint("La chiave resta cifrata solo su questo telefono. La voce di Memy invece è gratuita e non richiede chiavi.")
                 }
 
                 // ------------------------------------------------ Cervello
@@ -200,13 +187,12 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                     SttEngine.entries.forEach { e ->
                         val badge = when (e) {
                             SttEngine.GOOGLE_DEVICE -> if (googleOnDevice) "disponibile" else "non installato"
-                            SttEngine.ELEVENLABS -> if (settings.hasElevenKey) "pronto" else "serve chiave"
                             SttEngine.VOSK -> if (ui.voiceModelInstalled) "installato" else "da scaricare"
                             SttEngine.AUTO -> null
                         }
                         Choice(settings.sttEngine == e, e.label, e.description, badge) { app.settings.setSttEngine(e) }
                     }
-                    Hint("Scribe è molto più preciso del motore offline, ma usa i crediti del tuo account ElevenLabs.")
+                    if (!googleOnDevice) Hint("Su questo telefono non c'è il riconoscimento di Google: Memy usa quello offline, che va scaricato una volta.")
                     val progress = ui.modelDownloadProgress
                     when {
                         progress != null -> {
@@ -272,7 +258,7 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                 SectionCard(Icons.Filled.SystemUpdate, "Aggiornamenti", "Versione ${app.updates.currentVersionName}") {
                     SwitchRow(
                         "Aggiornamento automatico",
-                        "Quando esce una nuova versione, Memy la scarica e la installa da sola.",
+                        "Quando esce una nuova versione, Memy la scarica (con il Wi-Fi) e la installa da sola.",
                         settings.autoUpdate, app.settings::setAutoUpdate,
                     )
                     val status = when (val u = update) {
@@ -302,98 +288,117 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
 
 // ---------------------------------------------------------------- voce
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun VoiceSection(app: MemyApp) {
     val settings by app.settings.state.collectAsStateWithLifecycle()
     val catalog by app.controller.voice.catalog.collectAsStateWithLifecycle()
-    val previewing by app.controller.voice.previewing.collectAsStateWithLifecycle()
+    val preview by app.controller.voice.preview.collectAsStateWithLifecycle()
     val voice = app.controller.voice
+    var showAll by remember { mutableStateOf(false) }
 
-    LaunchedEffect(settings.hasElevenKey) {
-        if (settings.hasElevenKey && catalog.voices.isEmpty()) voice.refreshCatalog()
-    }
+    SectionCard(Icons.Filled.GraphicEq, "Voce", "${settings.voiceName} · gratuita") {
+        Hint("Voci neurali di Microsoft Edge: naturali, gratuite e senza limiti. Tocca ▶ per ascoltare un'anteprima in italiano.")
 
-    SectionCard(
-        Icons.Filled.GraphicEq, "Voce",
-        when {
-            !settings.hasElevenKey -> "Aggiungi la chiave ElevenLabs"
-            settings.voiceName.isNotBlank() -> "${settings.voiceName} · ${settings.voiceModel.label}"
-            else -> "Scegli una voce"
-        },
-        attention = !settings.hasElevenKey,
-    ) {
-        if (!settings.hasElevenKey) {
-            Hint("La voce di Memy è di ElevenLabs. Aggiungi la chiave nella sezione \"Chiavi\" qui sopra: finché manca, Memy usa la voce di riserva del telefono.")
-            return@SectionCard
+        val italian = catalog.voices.filter { it.isItalian }
+        val multilingual = catalog.voices.filter { !it.isItalian }
+
+        Text("Voci italiane", style = MaterialTheme.typography.labelLarge, color = MemyColors.TextPrimary)
+        italian.forEach { v ->
+            VoiceRow(v, v.id == settings.voiceId, preview?.takeIf { it.voiceId == v.id }, { app.settings.setVoice(v.id, v.name) }) { voice.togglePreview(v) }
         }
 
-        catalog.usage?.let { u ->
-            val nf = remember { NumberFormat.getIntegerInstance(Locale.ITALIAN) }
-            val fraction = if (u.limit > 0) (u.used.toFloat() / u.limit).coerceIn(0f, 1f) else 0f
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row {
-                    Text("Crediti di questo mese", style = MaterialTheme.typography.labelMedium, color = MemyColors.TextSecondary, modifier = Modifier.weight(1f))
-                    Text("${nf.format(u.remaining)} rimasti su ${nf.format(u.limit)}", style = MaterialTheme.typography.labelMedium, color = MemyColors.TextPrimary)
+        if (multilingual.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { showAll = !showAll }.padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Voci multilingue (${multilingual.size})", style = MaterialTheme.typography.labelLarge, color = MemyColors.TextPrimary)
+                    Hint("Parlano anche italiano, con un leggero accento straniero.")
                 }
-                LinearProgressIndicator(
-                    progress = { fraction }, modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(4.dp)),
-                    color = if (fraction > 0.9f) MemyColors.Amber else MemyColors.Cyan, trackColor = MemyColors.Glass,
+                val rotation by animateFloatAsState(if (showAll) 180f else 0f, tween(250), label = "multi")
+                Icon(
+                    Icons.Filled.KeyboardArrowDown, null, tint = MemyColors.TextSecondary,
+                    modifier = Modifier.graphicsLayer { rotationZ = rotation },
                 )
             }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Scegli la voce", style = MaterialTheme.typography.labelLarge, color = MemyColors.TextPrimary, modifier = Modifier.weight(1f))
-            if (catalog.loading) CircularProgressIndicator(Modifier.size(18.dp), color = MemyColors.Cyan, strokeWidth = 2.dp)
-            else Box(Modifier.size(36.dp).clip(CircleShape).clickable { voice.refreshCatalog() }, contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.Refresh, "Aggiorna elenco", tint = MemyColors.TextSecondary, modifier = Modifier.size(18.dp))
+            AnimatedVisibility(showAll, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    multilingual.forEach { v ->
+                        VoiceRow(v, v.id == settings.voiceId, preview?.takeIf { it.voiceId == v.id }, { app.settings.setVoice(v.id, v.name) }) { voice.togglePreview(v) }
+                    }
+                }
             }
         }
-        Hint("Tocca ▶ per ascoltare l'anteprima (gratis, in inglese). Le voci \"Gratuita\" funzionano con il piano gratuito e parlano anche italiano.")
+        if (catalog.loading) Hint("Aggiorno l'elenco delle voci…")
         catalog.error?.let { Hint(it, warning = true) }
 
-        catalog.voices.forEach { v ->
-            VoiceRow(
-                voice = v,
-                selected = v.id == settings.voiceId,
-                playing = previewing == v.id,
-                onSelect = { app.settings.setVoice(v.id, v.name) },
-                onPreview = { voice.togglePreview(v) },
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "Velocità  ${if (settings.voiceRate >= 0) "+" else ""}${settings.voiceRate}%",
+            style = MaterialTheme.typography.labelMedium, color = MemyColors.TextSecondary,
+        )
+        Slider(
+            value = settings.voiceRate.toFloat(), onValueChange = { app.settings.setVoiceRate((it / 5).toInt() * 5) },
+            valueRange = -30f..40f, colors = sliderColors(),
+        )
+        Text(
+            "Tono  ${if (settings.voicePitch >= 0) "+" else ""}${settings.voicePitch}",
+            style = MaterialTheme.typography.labelMedium, color = MemyColors.TextSecondary,
+        )
+        Slider(
+            value = settings.voicePitch.toFloat(), onValueChange = { app.settings.setVoicePitch((it / 2).toInt() * 2) },
+            valueRange = -20f..20f, colors = sliderColors(),
+        )
+        if (settings.voiceRate != 0 || settings.voicePitch != 0) {
+            Text(
+                "Ripristina", style = MaterialTheme.typography.labelMedium, color = MemyColors.Cyan,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable {
+                    app.settings.setVoiceRate(0); app.settings.setVoicePitch(0)
+                }.padding(vertical = 4.dp),
             )
         }
-
-        Text("Qualità", style = MaterialTheme.typography.labelLarge, color = MemyColors.TextPrimary)
-        VoiceModel.entries.forEach { m ->
-            Choice(settings.voiceModel == m, m.label, m.description) { app.settings.setVoiceModel(m) }
-        }
-
-        Text("Velocità  ${"%.2f".format(settings.speechRate)}×", style = MaterialTheme.typography.labelMedium, color = MemyColors.TextSecondary)
-        Slider(
-            value = settings.speechRate, onValueChange = app.settings::setSpeechRate, valueRange = 0.8f..1.2f,
-            colors = SliderDefaults.colors(thumbColor = MemyColors.Cyan, activeTrackColor = MemyColors.Violet, inactiveTrackColor = MemyColors.Glass),
-        )
-        GradientButton("Prova la voce in italiano", app.controller::testVoice, Modifier.fillMaxWidth())
-        Hint("La prova in italiano usa qualche credito; le anteprime no.")
     }
 }
 
-private val labelIt = mapOf(
-    "female" to "donna", "male" to "uomo", "neutral" to "neutra",
-    "young" to "giovane", "middle aged" to "adulta", "old" to "matura",
-    "american" to "americana", "british" to "britannica", "australian" to "australiana", "italian" to "italiana",
-    "irish" to "irlandese", "swedish" to "svedese", "transatlantic" to "transatlantica",
-    "calm" to "calma", "warm" to "calda", "confident" to "sicura", "professional" to "professionale", "casual" to "informale",
-    "soft" to "morbida", "deep" to "profonda", "friendly" to "amichevole", "upbeat" to "vivace", "classy" to "elegante",
-    "expressive" to "espressiva", "hyped" to "energica", "husky" to "roca", "mature" to "matura", "pleasant" to "piacevole",
-    "crisp" to "nitida", "intense" to "intensa", "sassy" to "spigliata", "relaxed" to "rilassata", "wise" to "saggia",
-    "resonant" to "risonante", "chill" to "tranquilla", "formal" to "formale", "raspy" to "graffiante", "authoritative" to "autorevole",
+@Composable
+private fun sliderColors() = SliderDefaults.colors(
+    thumbColor = MemyColors.Cyan, activeTrackColor = MemyColors.Violet, inactiveTrackColor = MemyColors.Glass,
 )
 
-private fun describe(v: ElevenVoice): String =
-    listOf(v.gender, v.style, v.accent).filter { it.isNotBlank() }.map { labelIt[it.lowercase()] ?: it }.distinct().joinToString(" · ")
+private val personalityIt = mapOf(
+    "Friendly" to "cordiale", "Positive" to "solare", "Warm" to "calda", "Confident" to "sicura", "Caring" to "premurosa",
+    "Pleasant" to "piacevole", "Authentic" to "autentica", "Expressive" to "espressiva", "Calm" to "calma", "Clear" to "chiara",
+    "Bright" to "brillante", "Cheerful" to "allegra", "Approachable" to "accogliente", "Engaging" to "coinvolgente",
+    "Casual" to "informale", "Sincere" to "sincera", "Passion" to "appassionata", "Considerate" to "attenta",
+    "Comfort" to "rassicurante", "Lively" to "vivace", "Rational" to "razionale", "Upbeat" to "vivace",
+)
+
+private fun describe(v: EdgeVoice): String {
+    val gender = if (v.gender == "Female") "donna" else "uomo"
+    val origin = when {
+        v.isItalian -> null
+        v.locale.startsWith("en-US") -> "americana"
+        v.locale.startsWith("en-AU") -> "australiana"
+        v.locale.startsWith("fr") -> "francese"
+        v.locale.startsWith("de") -> "tedesca"
+        v.locale.startsWith("pt") -> "brasiliana"
+        v.locale.startsWith("ko") -> "coreana"
+        else -> v.locale
+    }
+    val traits = v.personalities.mapNotNull { personalityIt[it] }.take(2)
+    return (listOf(gender) + traits + listOfNotNull(origin)).distinct().joinToString(" · ")
+}
 
 @Composable
-private fun VoiceRow(voice: ElevenVoice, selected: Boolean, playing: Boolean, onSelect: () -> Unit, onPreview: () -> Unit) {
+private fun VoiceRow(
+    voice: EdgeVoice,
+    selected: Boolean,
+    preview: VoicePlayer.Preview?,
+    onSelect: () -> Unit,
+    onPreview: () -> Unit,
+) {
     val border by animateColorAsState(if (selected) MemyColors.Violet else MemyColors.GlassBorder, label = "voiceBorder")
     val bg by animateColorAsState(if (selected) MemyColors.Violet.copy(alpha = 0.16f) else Color.Transparent, label = "voiceBg")
     val shape = RoundedCornerShape(18.dp)
@@ -402,12 +407,9 @@ private fun VoiceRow(voice: ElevenVoice, selected: Boolean, playing: Boolean, on
             .padding(start = 12.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Avatar colorato in base al nome, con l'iniziale.
-        val hue = remember(voice.id) { ((voice.name + voice.id).hashCode().toUInt() * 2654435761u % 360u).toFloat() }
+        val colors = if (voice.gender == "Female") listOf(MemyColors.Pink, MemyColors.Violet) else listOf(MemyColors.Cyan, MemyColors.Indigo)
         Box(
-            Modifier.size(42.dp).clip(CircleShape).background(
-                Brush.linearGradient(listOf(Color.hsv(hue, 0.55f, 0.95f), Color.hsv((hue + 50f) % 360f, 0.7f, 0.75f)))
-            ),
+            Modifier.size(42.dp).clip(CircleShape).background(Brush.linearGradient(colors)),
             contentAlignment = Alignment.Center,
         ) {
             if (selected) Icon(Icons.Filled.Check, "Selezionata", tint = Color.White, modifier = Modifier.size(20.dp))
@@ -415,29 +417,18 @@ private fun VoiceRow(voice: ElevenVoice, selected: Boolean, playing: Boolean, on
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(voice.name, style = MaterialTheme.typography.labelLarge, color = MemyColors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (voice.isFree) "Gratuita" else "Tua",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (voice.isFree) MemyColors.Mint else MemyColors.Amber,
-                    modifier = Modifier.clip(RoundedCornerShape(50))
-                        .background((if (voice.isFree) MemyColors.Mint else MemyColors.Amber).copy(alpha = 0.14f))
-                        .padding(horizontal = 8.dp, vertical = 2.dp),
-                )
-            }
-            val d = describe(voice)
-            if (d.isNotBlank()) Text(d, style = MaterialTheme.typography.bodyMedium, color = MemyColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(voice.name, style = MaterialTheme.typography.labelLarge, color = MemyColors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(describe(voice), style = MaterialTheme.typography.bodyMedium, color = MemyColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        if (voice.previewUrl != null) {
-            Box(
-                Modifier.pressable(onClick = onPreview).size(40.dp).clip(CircleShape)
-                    .background(if (playing) MemyColors.AccentGradient else SolidColor(MemyColors.GlassStrong)),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (playing) EqualizerBars(playing = true)
-                else Icon(Icons.Filled.PlayArrow, "Ascolta anteprima", tint = MemyColors.TextPrimary, modifier = Modifier.size(22.dp))
+        Box(
+            Modifier.pressable(onClick = onPreview).size(40.dp).clip(CircleShape)
+                .background(if (preview != null) MemyColors.AccentGradient else SolidColor(MemyColors.GlassStrong)),
+            contentAlignment = Alignment.Center,
+        ) {
+            when {
+                preview?.loading == true -> CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                preview != null -> EqualizerBars(playing = true)
+                else -> Icon(Icons.Filled.PlayArrow, "Ascolta anteprima", tint = MemyColors.TextPrimary, modifier = Modifier.size(22.dp))
             }
         }
     }

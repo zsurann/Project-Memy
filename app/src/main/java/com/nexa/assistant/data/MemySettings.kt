@@ -15,28 +15,27 @@ enum class ClaudeModel(val id: String, val label: String, val description: Strin
 
 /** Chi trascrive la tua voce. */
 enum class SttEngine(val label: String, val description: String) {
-    AUTO("Automatico", "Usa il migliore motore gratuito disponibile sul telefono."),
-    GOOGLE_DEVICE("Google (sul telefono)", "Gratis, se è installata l'app Google."),
-    ELEVENLABS("ElevenLabs Scribe", "Precisione altissima via internet, con la stessa chiave della voce."),
-    VOSK("Offline (Vosk)", "Funziona senza internet. Meno preciso."),
+    AUTO("Automatico", "Usa Google se è installato, altrimenti il riconoscimento offline."),
+    GOOGLE_DEVICE("Google (sul telefono)", "Gratis e preciso, se è installata l'app Google."),
+    VOSK("Offline (Vosk)", "Funziona senza internet e senza Google."),
 }
 
-/** Modello di sintesi vocale ElevenLabs. */
-enum class VoiceModel(val id: String, val label: String, val description: String, val supportsLanguageCode: Boolean) {
-    FLASH("eleven_flash_v2_5", "Flash 2.5", "Rapidissima e naturale. Consigliata.", true),
-    V4_TURBO("eleven_v4_turbo", "v4 Turbo", "La più espressiva in tempo reale.", true),
-    MULTILINGUAL("eleven_multilingual_v2", "Multilingual v2", "Molto realistica, un po' più lenta.", false),
+/** La voce predefinita di Memy (Microsoft Edge, gratuita). */
+object DefaultVoice {
+    const val ID = "it-IT-IsabellaNeural"
+    const val NAME = "Isabella"
 }
 
 data class SettingsState(
     val hasApiKey: Boolean,
-    val hasElevenKey: Boolean,
     val model: ClaudeModel,
     val sttEngine: SttEngine,
     val voiceId: String,
     val voiceName: String,
-    val voiceModel: VoiceModel,
-    val speechRate: Float,
+    /** Velocità della voce in percentuale rispetto al normale (-30..+40). */
+    val voiceRate: Int,
+    /** Tono della voce in Hz rispetto al normale (-20..+20). */
+    val voicePitch: Int,
     val continuousConversation: Boolean,
     val webSearch: Boolean,
     val autoUpdate: Boolean,
@@ -48,11 +47,13 @@ class MemySettings(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("nexa_settings", Context.MODE_PRIVATE)
 
     init {
-        // Pulizia: chiavi e scelte di servizi che Memy non usa più (voci Google Cloud e OpenAI).
-        if (prefs.contains("google_key_enc") || prefs.contains("openai_key_enc")) {
-            prefs.edit().remove("google_key_enc").remove("openai_key_enc").remove("voice_engine")
-                .remove("google_voice").remove("openai_voice").remove("eleven_voice").apply()
-        }
+        // Pulizia: chiavi e scelte di servizi vocali che Memy non usa più (Google Cloud, OpenAI, ElevenLabs).
+        val obsolete = listOf(
+            "google_key_enc", "openai_key_enc", "eleven_key_enc", "voice_engine", "google_voice", "openai_voice",
+            "eleven_voice", "eleven_voice_id_v2", "eleven_voice_name", "eleven_voice_model", "speech_rate_v2",
+        )
+        if (obsolete.any(prefs::contains)) prefs.edit().apply { obsolete.forEach { remove(it) } }.apply()
+        if (prefs.getString(KEY_STT, null) == "ELEVENLABS") prefs.edit().remove(KEY_STT).apply()
     }
 
     private val _state = MutableStateFlow(read())
@@ -63,13 +64,12 @@ class MemySettings(context: Context) {
 
     private fun read() = SettingsState(
         hasApiKey = prefs.contains(KEY_API),
-        hasElevenKey = prefs.contains(KEY_ELEVEN),
         model = enumPref(KEY_MODEL, ClaudeModel.OPUS),
         sttEngine = enumPref(KEY_STT, SttEngine.AUTO),
-        voiceId = prefs.getString(KEY_VOICE_ID, "") ?: "",
-        voiceName = prefs.getString(KEY_VOICE_NAME, "") ?: "",
-        voiceModel = enumPref(KEY_VOICE_MODEL, VoiceModel.FLASH),
-        speechRate = prefs.getFloat(KEY_RATE, 1.0f),
+        voiceId = prefs.getString(KEY_VOICE_ID, null) ?: DefaultVoice.ID,
+        voiceName = prefs.getString(KEY_VOICE_NAME, null) ?: DefaultVoice.NAME,
+        voiceRate = prefs.getInt(KEY_RATE, 0),
+        voicePitch = prefs.getInt(KEY_PITCH, 0),
         continuousConversation = prefs.getBoolean(KEY_CONTINUOUS, true),
         webSearch = prefs.getBoolean(KEY_WEB, true),
         autoUpdate = prefs.getBoolean(KEY_AUTO_UPDATE, true),
@@ -81,23 +81,18 @@ class MemySettings(context: Context) {
         _state.value = read()
     }
 
-    private fun secret(key: String): String? = prefs.getString(key, null)?.let { SecureStore.decrypt(it) }
+    fun apiKey(): String? = prefs.getString(KEY_API, null)?.let { SecureStore.decrypt(it) }
 
-    private fun setSecret(key: String, value: String) = edit {
+    fun setApiKey(value: String) = edit {
         val v = value.trim()
-        if (v.isEmpty()) remove(key) else putString(key, SecureStore.encrypt(v))
+        if (v.isEmpty()) remove(KEY_API) else putString(KEY_API, SecureStore.encrypt(v))
     }
-
-    fun apiKey() = secret(KEY_API)
-    fun elevenKey() = secret(KEY_ELEVEN)
-    fun setApiKey(v: String) = setSecret(KEY_API, v)
-    fun setElevenKey(v: String) = setSecret(KEY_ELEVEN, v)
 
     fun setModel(v: ClaudeModel) = edit { putString(KEY_MODEL, v.name) }
     fun setSttEngine(v: SttEngine) = edit { putString(KEY_STT, v.name) }
     fun setVoice(id: String, name: String) = edit { putString(KEY_VOICE_ID, id); putString(KEY_VOICE_NAME, name) }
-    fun setVoiceModel(v: VoiceModel) = edit { putString(KEY_VOICE_MODEL, v.name) }
-    fun setSpeechRate(v: Float) = edit { putFloat(KEY_RATE, v) }
+    fun setVoiceRate(v: Int) = edit { putInt(KEY_RATE, v.coerceIn(-30, 40)) }
+    fun setVoicePitch(v: Int) = edit { putInt(KEY_PITCH, v.coerceIn(-20, 20)) }
     fun setContinuous(v: Boolean) = edit { putBoolean(KEY_CONTINUOUS, v) }
     fun setWebSearch(v: Boolean) = edit { putBoolean(KEY_WEB, v) }
     fun setAutoUpdate(v: Boolean) = edit { putBoolean(KEY_AUTO_UPDATE, v) }
@@ -109,13 +104,12 @@ class MemySettings(context: Context) {
 
     private companion object {
         const val KEY_API = "api_key_enc"
-        const val KEY_ELEVEN = "eleven_key_enc"
         const val KEY_MODEL = "model"
         const val KEY_STT = "stt_engine"
-        const val KEY_VOICE_ID = "eleven_voice_id_v2"
-        const val KEY_VOICE_NAME = "eleven_voice_name"
-        const val KEY_VOICE_MODEL = "eleven_voice_model"
-        const val KEY_RATE = "speech_rate_v2"
+        const val KEY_VOICE_ID = "edge_voice_id"
+        const val KEY_VOICE_NAME = "edge_voice_name"
+        const val KEY_RATE = "edge_voice_rate"
+        const val KEY_PITCH = "edge_voice_pitch"
         const val KEY_CONTINUOUS = "continuous"
         const val KEY_WEB = "web_search"
         const val KEY_AUTO_UPDATE = "auto_update"
