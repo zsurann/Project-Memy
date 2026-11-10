@@ -31,17 +31,24 @@ Microfono → riconoscimento vocale → Claude (in streaming, con strumenti e ri
          → azioni sul telefono → voce neurale Edge, frase per frase
 ```
 
-- **Cervello**: Claude Opus 5.5, Sonnet 5.5 o Haiku 5.5, a scelta. Tutti possono cercare sul web.
+- **Cervello**: Claude Opus 5.5, Sonnet 5.5 o Haiku 5.5, a scelta, tutti con ricerca web. Per parlare a voce
+  il più rapido a rispondere è Sonnet 5.5 (risponde senza la fase di ragionamento iniziale); Opus 5.5 ragiona
+  sempre prima di parlare, quindi è più lento.
 - **Voce**: le voci neurali di Microsoft Edge (Isabella, Elsa, Diego, Giuseppe e le voci multilingue). Sono
   gratuite, senza account né limiti di crediti. Nelle impostazioni le ascolti in anteprima e regoli velocità e tono.
   È lo stesso servizio "Leggi ad alta voce" del browser Edge, usato con il protocollo della libreria open source
   [edge-tts](https://github.com/rany2/edge-tts). Non è un'API ufficiale: se Microsoft la cambia, Memy usa per un momento
   la voce del telefono finché non arriva un aggiornamento.
-- **Ascolto**: [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), uno dei migliori modelli
-  di riconoscimento vocale open source, che gira **sul telefono** grazie a [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
-  È gratuito, funziona senza internet e mette la punteggiatura. Silero VAD capisce quando inizi e finisci di parlare.
-  Il modello si scarica una volta sola (circa 490 MB) da *Impostazioni → Ascolto*. In alternativa c'è Google, se
-  sul telefono è installata l'app Google.
+- **Ascolto**, a scelta:
+  - **Whisper large-v3 su Groq** (consigliato): il modello più preciso per l'italiano, risponde in una frazione di
+    secondo. Gratis con una chiave di [Groq](https://console.groq.com/keys) (piano gratuito: 20 frasi al minuto,
+    2.000 al giorno, senza carta di credito).
+  - **[NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)** sul telefono, grazie a
+    [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): gratuito e senza internet (circa 490 MB da scaricare).
+    Se è installato, mostra il testo mentre parli e fa da riserva quando Whisper non è raggiungibile.
+  - Google, se sul telefono c'è l'app Google.
+
+  Silero VAD capisce quando inizi e quando finisci di parlare.
 - **Conversazione continua**: dopo ogni risposta torna ad ascoltarti. Se tocchi la sfera mentre parla, la interrompi.
 - **Ti sente anche fuori dall'app**: durante una conversazione resta attivo un servizio con notifica "Memy". Così,
   mentre lavora in un'altra app, puoi rispondere a voce alle sue domande e conferme. Si spegne da solo pochi secondi
@@ -76,15 +83,16 @@ Su Android 13 e successivi, se l'interruttore dell'accessibilità è bloccato:
 Serve solo la chiave di **Claude (Anthropic)**: <https://console.anthropic.com/settings/keys>. Si paga a consumo con una
 ricarica prepagata; l'abbonamento Claude Pro non include l'API. Una risposta breve costa indicativamente 0,0005 $ con
 Haiku, 0,004 $ con Sonnet e 0,008 $ con Opus. I compiti in cui Memy usa un'app richiedono molti passaggi e costano di più.
-La voce e l'ascolto sono gratuiti.
+La voce e l'ascolto sono gratuiti (Groq ha un piano gratuito; Parakeet gira sul telefono).
 
 ## Installazione sul telefono
 
 1. Dal telefono apri la pagina *Releases* di questo repository ("Memy — ultima versione") e scarica `Memy.apk`.
 2. Apri il file e consenti l'installazione da questa fonte.
 3. Apri Memy e inserisci la chiave di Claude (*Impostazioni → Chiave di Claude*).
-4. Scarica il modello di ascolto Parakeet (*Impostazioni → Ascolto*, circa 490 MB, meglio con il Wi-Fi) e scegli la
-   voce ascoltando le anteprime (*Impostazioni → Voce*).
+4. Aggiungi la chiave gratuita di Groq (*Impostazioni → Chiavi*) e, se vuoi il testo in tempo reale e l'ascolto
+   senza internet, scarica anche Parakeet (*Impostazioni → Ascolto*, circa 490 MB, meglio con il Wi-Fi).
+   Poi scegli la voce ascoltando le anteprime (*Impostazioni → Voce*).
 5. Attiva i poteri che vuoi (*Impostazioni → Poteri*).
 6. In *Impostazioni → Sempre pronta* segui i passaggi per OriginOS, così il telefono non chiude Memy.
 7. Aggiungi il riquadro **"Ehi Memy"** alle Impostazioni rapide: un tocco e Memy ti ascolta.
@@ -135,7 +143,7 @@ app/src/main/java/com/nexa/assistant/
 ├── agent/      # Ciclo con Claude in streaming, prompt di sistema, divisione in frasi
 ├── tools/      # Strumenti: base, schermo, notifiche, dati personali, sistema
 ├── access/     # Servizio di accessibilità e lettura delle notifiche
-├── speech/     # Voce Edge (EdgeTts + VoicePlayer), ascolto Parakeet + Silero VAD, riconoscimento Google
+├── speech/     # Voce Edge (EdgeTts + VoicePlayer); ascolto: VoiceCapture (Silero VAD), Whisper su Groq, Parakeet
 ├── reminders/  # Promemoria
 ├── update/     # Aggiornamento automatico da GitHub
 ├── data/       # Impostazioni, memoria, chiavi cifrate

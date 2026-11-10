@@ -10,7 +10,8 @@ import com.nexa.assistant.speech.SpeechToText
 import com.nexa.assistant.speech.SystemSpeechToText
 import com.nexa.assistant.speech.VoicePlayer
 import com.nexa.assistant.speech.ParakeetModel
-import com.nexa.assistant.speech.ParakeetSpeechToText
+import com.nexa.assistant.speech.CaptureSpeechToText
+import com.nexa.assistant.speech.GroqWhisper
 import com.nexa.assistant.tools.basicTools
 import com.nexa.assistant.tools.dataTools
 import com.nexa.assistant.tools.notificationTools
@@ -68,7 +69,12 @@ class MemyController(private val app: MemyApp) {
     private val ids = AtomicLong()
 
     private val asrModel = ParakeetModel(app)
-    private val parakeet = ParakeetSpeechToText(app, asrModel)
+    private val groq = GroqWhisper()
+    /** Whisper su Groq per la frase finale; testo parziale e riserva senza internet con Parakeet (se scaricato). */
+    private val whisper = CaptureSpeechToText(
+        app, "Whisper", asrModel, ready = { !settings.groqKey().isNullOrBlank() },
+    ) { samples -> groq.transcribe(samples, settings.groqKey().orEmpty(), whisperPrompt()) }
+    private val parakeet = CaptureSpeechToText(app, "Parakeet", asrModel, ready = { asrModel.isInstalled() }, finalTranscriber = null)
     val googleDevice = SystemSpeechToText(app, googleOnly = true)
     private val anySystem = SystemSpeechToText(app, googleOnly = false)
     private var activeStt: SpeechToText? = null
@@ -148,7 +154,7 @@ class MemyController(private val app: MemyApp) {
         }
         voice.refreshCatalog()
         // Carica in anticipo il modello di ascolto e libera lo spazio del vecchio modello Vosk (non più usato).
-        parakeet.warmUp()
+        asrModel.warmUp()
         scope.launch(Dispatchers.IO) { java.io.File(app.filesDir, "vosk-model-it").deleteRecursively() }
     }
 
@@ -157,9 +163,16 @@ class MemyController(private val app: MemyApp) {
 
     /** Sceglie il motore di ascolto in base alle impostazioni e a cosa è disponibile. */
     fun resolveStt(): SpeechToText? = when (settings.state.value.sttEngine) {
-        SttEngine.AUTO -> listOf(parakeet, googleDevice, anySystem).firstOrNull { it.isReady() }
+        SttEngine.AUTO -> listOf(whisper, parakeet, googleDevice, anySystem).firstOrNull { it.isReady() }
+        SttEngine.WHISPER -> whisper.takeIf { it.isReady() }
         SttEngine.PARAKEET -> parakeet.takeIf { it.isReady() }
         SttEngine.GOOGLE_DEVICE -> googleDevice.takeIf { it.isReady() }
+    }
+
+    /** Esempio di stile per Whisper, con il nome dell'utente e i nomi che Memy sente spesso. */
+    private fun whisperPrompt(): String {
+        val name = settings.state.value.userName
+        return (if (name.isNotBlank()) "Ciao Memy, sono $name. " else "") + GroqWhisper.DEFAULT_PROMPT
     }
 
     /**
@@ -215,6 +228,8 @@ class MemyController(private val app: MemyApp) {
             }
 
             override fun onProcessing() {
+                // Mentre si trascrive, si prepara già la connessione per la voce della risposta.
+                voice.prewarm()
                 _state.update { if (it.phase == Phase.LISTENING) it.copy(phase = Phase.PROCESSING) else it }
             }
 
@@ -252,7 +267,7 @@ class MemyController(private val app: MemyApp) {
                 if (settings.state.value.sttEngine == SttEngine.GOOGLE_DEVICE) {
                     "Il riconoscimento di Google non è disponibile su questo telefono. Scegli un altro motore nelle impostazioni."
                 } else {
-                    "Per ascoltarti scarica il modello Parakeet in Impostazioni → Ascolto (circa 490 MB, una volta sola, meglio con il Wi-Fi)."
+                    "Per ascoltarti aggiungi la chiave gratuita di Groq oppure scarica Parakeet, in Impostazioni → Ascolto."
                 }
             )
             null
@@ -270,6 +285,7 @@ class MemyController(private val app: MemyApp) {
             notice("Inserisci prima la tua chiave API di Claude nelle impostazioni."); return
         }
         ensureSession()
+        voice.prewarm()
         job?.cancel()
         confirmation?.complete(false)
         stopStt()
@@ -424,7 +440,7 @@ class MemyController(private val app: MemyApp) {
             _state.update { it.copy(modelDownloadProgress = 0f) }
             try {
                 asrModel.download { p -> _state.update { it.copy(modelDownloadProgress = p) } }
-                parakeet.warmUp()
+                asrModel.warmUp()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {

@@ -60,83 +60,135 @@ class EdgeTts(
     ): ByteArray {
         val clean = escapeXml(removeIncompatible(text)).trim()
         require(clean.isNotEmpty()) { "Testo vuoto" }
+        val ssml = mkSsml(voice, ratePercent, pitchHz, clean)
         return try {
-            synthesizeOnce(clean, voice, ratePercent, pitchHz, outputFormat)
+            synthesizeOnce(ssml, outputFormat)
         } catch (e: EdgeTtsException) {
             // 403: probabilmente l'orologio del telefono non è preciso. Si corregge con l'ora del server e si riprova.
-            if (e.code == 403 && Drm.lastServerSkewAdjusted) synthesizeOnce(clean, voice, ratePercent, pitchHz, outputFormat) else throw e
+            if (e.code == 403 && Drm.lastServerSkewAdjusted) synthesizeOnce(ssml, outputFormat) else throw e
         }
     }
 
-    private fun synthesizeOnce(escapedText: String, voice: String, ratePercent: Int, pitchHz: Int, format: String): ByteArray {
-        val request = Request.Builder()
-            .url(
-                "$WSS_URL&ConnectionId=${connectId()}&Sec-MS-GEC=${Drm.secMsGec()}&Sec-MS-GEC-Version=$SEC_MS_GEC_VERSION"
-            )
-            .apply { WSS_HEADERS.forEach { (k, v) -> header(k, v) } }
-            .header("Cookie", "muid=${Drm.muid()};")
-            .build()
+    /**
+     * Apre in anticipo una connessione (già configurata) da usare per la prossima frase:
+     * così la voce parte prima, senza aspettare l'apertura della connessione.
+     */
+    fun prewarm(outputFormat: String = MP3_FORMAT) {
+        synchronized(this) {
+            val s = spare
+            if (s != null && s.usable() && s.format == outputFormat) return
+            s?.close()
+            spare = Connection(outputFormat)
+        }
+    }
 
-        val audio = ByteArrayOutputStream()
-        val done = CountDownLatch(1)
-        var failure: Exception? = null
-        var gotAudio = false
+    @Volatile private var spare: Connection? = null
 
-        val socket = http.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                webSocket.send(speechConfig(format))
-                webSocket.send(ssmlMessage(mkSsml(voice, ratePercent, pitchHz, escapedText)))
-            }
+    private fun takeConnection(format: String): Connection = synchronized(this) {
+        val s = spare
+        spare = null
+        if (s != null && s.usable() && s.format == format) s else {
+            s?.close()
+            Connection(format)
+        }
+    }
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                val path = headerValue(text.substringBefore("\r\n\r\n"), "Path")
-                if (path == "turn.end") {
-                    webSocket.close(1000, null)
+    private fun synthesizeOnce(ssml: String, format: String): ByteArray {
+        val conn = takeConnection(format)
+        // Mentre questa frase viene sintetizzata, si prepara già la connessione per la successiva.
+        prewarm(format)
+        try {
+            return conn.synthesize(ssml)
+        } finally {
+            conn.close()
+        }
+    }
+
+    /** Una connessione WebSocket al servizio, aperta subito e pronta per una richiesta. */
+    private inner class Connection(val format: String) {
+        private val opened = CountDownLatch(1)
+        private val done = CountDownLatch(1)
+        private val audio = ByteArrayOutputStream()
+        private val createdAt = System.currentTimeMillis()
+        @Volatile private var failure: EdgeTtsException? = null
+        @Volatile private var closed = false
+        @Volatile private var gotAudio = false
+
+        private val socket: WebSocket = http.newWebSocket(
+            Request.Builder()
+                .url("$WSS_URL&ConnectionId=${connectId()}&Sec-MS-GEC=${Drm.secMsGec()}&Sec-MS-GEC-Version=$SEC_MS_GEC_VERSION")
+                .apply { WSS_HEADERS.forEach { (k, v) -> header(k, v) } }
+                .header("Cookie", "muid=${Drm.muid()};")
+                .build(),
+            object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    webSocket.send(speechConfig(format))
+                    opened.countDown()
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    if (headerValue(text.substringBefore("\r\n\r\n"), "Path") == "turn.end") done.countDown()
+                }
+
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    val data = bytes.toByteArray()
+                    if (data.size < 2) return
+                    val headerLength = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
+                    if (headerLength + 2 > data.size) return
+                    val headers = String(data, 2, headerLength, Charsets.UTF_8)
+                    if (headerValue(headers, "Path") != "audio") return
+                    if (headerValue(headers, "Content-Type").isNullOrEmpty()) return
+                    val start = 2 + headerLength
+                    if (start < data.size) {
+                        synchronized(audio) { audio.write(data, start, data.size - start) }
+                        gotAudio = true
+                    }
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    closed = true
+                    val code = response?.code ?: 0
+                    if (code == 403) Drm.adjustSkewFrom(response?.header("Date"))
+                    failure = EdgeTtsException(
+                        when (code) {
+                            0 -> "servizio vocale non raggiungibile (${t.message})"
+                            403 -> "accesso al servizio vocale negato (403)"
+                            else -> "errore del servizio vocale ($code)"
+                        },
+                        code,
+                    )
+                    opened.countDown()
                     done.countDown()
                 }
-            }
 
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                val data = bytes.toByteArray()
-                if (data.size < 2) return
-                val headerLength = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
-                if (headerLength + 2 > data.size) return
-                val headers = String(data, 2, headerLength, Charsets.UTF_8)
-                if (headerValue(headers, "Path") != "audio") return
-                if (headerValue(headers, "Content-Type").isNullOrEmpty()) return
-                val start = 2 + headerLength
-                if (start < data.size) {
-                    synchronized(audio) { audio.write(data, start, data.size - start) }
-                    gotAudio = true
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    closed = true
+                    opened.countDown()
+                    done.countDown()
                 }
-            }
+            },
+        )
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                val code = response?.code ?: 0
-                if (code == 403) Drm.adjustSkewFrom(response?.header("Date"))
-                failure = EdgeTtsException(
-                    when (code) {
-                        0 -> "servizio vocale non raggiungibile (${t.message})"
-                        403 -> "accesso al servizio vocale negato (403)"
-                        else -> "errore del servizio vocale ($code)"
-                    },
-                    code,
-                )
-                done.countDown()
-            }
+        /** Ancora utilizzabile: non chiusa, senza errori e abbastanza recente (il server chiude le connessioni inattive). */
+        fun usable() = !closed && failure == null && System.currentTimeMillis() - createdAt < MAX_IDLE_MS
 
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                done.countDown()
-            }
-        })
-
-        if (!done.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-            socket.cancel()
-            throw EdgeTtsException("il servizio vocale non risponde")
+        fun synthesize(ssml: String): ByteArray {
+            if (!opened.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) throw EdgeTtsException("il servizio vocale non risponde")
+            failure?.let { throw it }
+            if (closed) throw EdgeTtsException("connessione al servizio vocale chiusa")
+            socket.send(ssmlMessage(ssml))
+            if (!done.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) throw EdgeTtsException("il servizio vocale non risponde")
+            failure?.let { throw it }
+            if (!gotAudio) throw EdgeTtsException("nessun audio ricevuto (voce non valida?)")
+            return synchronized(audio) { audio.toByteArray() }
         }
-        failure?.let { throw it }
-        if (!gotAudio) throw EdgeTtsException("nessun audio ricevuto (voce \"$voice\" non valida?)")
-        return synchronized(audio) { audio.toByteArray() }
+
+        fun close() {
+            if (!closed) {
+                closed = true
+                socket.close(1000, null)
+            }
+        }
     }
 
     /** Elenco di tutte le voci disponibili. Bloccante. */
@@ -168,6 +220,7 @@ class EdgeTts(
 
     companion object {
         private const val TIMEOUT_SECONDS = 25L
+        private const val MAX_IDLE_MS = 20_000L
         private const val BASE_URL = "speech.platform.bing.com/consumer/speech/synthesize/readaloud"
         internal const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
         private const val WSS_URL = "wss://$BASE_URL/edge/v1?TrustedClientToken=$TRUSTED_CLIENT_TOKEN"

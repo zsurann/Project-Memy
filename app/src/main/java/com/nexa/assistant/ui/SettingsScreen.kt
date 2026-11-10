@@ -147,10 +147,14 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                     }
                 }
 
-                // ------------------------------------------------ Chiave
+                // ------------------------------------------------ Chiavi
                 SectionCard(
-                    Icons.Filled.Key, "Chiave di Claude",
-                    if (settings.hasApiKey) "Salvata ✓" else "Serve per iniziare",
+                    Icons.Filled.Key, "Chiavi",
+                    when {
+                        !settings.hasApiKey -> "Serve la chiave di Claude per iniziare"
+                        settings.hasGroqKey -> "Claude ✓ · Groq ✓"
+                        else -> "Claude ✓ · Groq (gratis) da aggiungere"
+                    },
                     initiallyExpanded = !settings.hasApiKey, attention = !settings.hasApiKey,
                 ) {
                     SecretField(
@@ -161,7 +165,16 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                         onHelp = { context.openUrl("https://console.anthropic.com/settings/keys") },
                         required = true,
                     )
-                    Hint("La chiave resta cifrata solo su questo telefono. La voce di Memy invece è gratuita e non richiede chiavi.")
+                    SecretField(
+                        title = "Groq — ascolto con Whisper (gratis)",
+                        saved = settings.hasGroqKey,
+                        placeholder = "gsk_…",
+                        onSave = app.settings::setGroqKey,
+                        onHelp = { context.openUrl("https://console.groq.com/keys") },
+                        note = "Crea un account gratuito su console.groq.com (non serve la carta) e genera una API key. " +
+                            "Il piano gratuito permette 2.000 frasi al giorno.",
+                    )
+                    Hint("Le chiavi restano cifrate solo su questo telefono. La voce di Memy è gratuita e non richiede chiavi.")
                 }
 
                 // ------------------------------------------------ Cervello
@@ -183,19 +196,25 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                 VoiceSection(app)
 
                 // ------------------------------------------------ Ascolto
+                val canHear = settings.hasGroqKey || ui.asrModelInstalled || googleOnDevice
                 SectionCard(
                     Icons.Filled.Mic, "Ascolto",
-                    if (ui.asrModelInstalled || googleOnDevice) settings.sttEngine.label else "Scarica il modello per farti sentire",
-                    attention = !ui.asrModelInstalled && !googleOnDevice,
+                    if (canHear) settings.sttEngine.label else "Aggiungi Groq o scarica Parakeet per farti sentire",
+                    attention = !canHear,
                 ) {
                     SttEngine.entries.forEach { e ->
                         val badge = when (e) {
+                            SttEngine.WHISPER -> if (settings.hasGroqKey) "pronto" else "serve chiave gratuita"
                             SttEngine.GOOGLE_DEVICE -> if (googleOnDevice) "disponibile" else "non installato"
                             SttEngine.PARAKEET -> if (ui.asrModelInstalled) "installato" else "da scaricare"
                             SttEngine.AUTO -> null
                         }
                         Choice(settings.sttEngine == e, e.label, e.description, badge) { app.settings.setSttEngine(e) }
                     }
+                    Hint(
+                        "Consiglio: usa Whisper (il più preciso) e tieni scaricato anche Parakeet: mentre parli mostra il " +
+                            "testo in tempo reale e ti capisce anche quando non c'è internet."
+                    )
                     val progress = ui.modelDownloadProgress
                     when {
                         progress != null -> {

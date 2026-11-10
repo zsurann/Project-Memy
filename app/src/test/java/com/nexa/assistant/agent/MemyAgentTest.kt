@@ -161,7 +161,19 @@ class MemyAgentTest {
         val tools = body.getJSONArray("tools")
         val web = (0 until tools.length()).map { tools.getJSONObject(it) }.first { it.getString("name") == "web_search" }
         assertEquals("web_search_20250305", web.getString("type"))
-        assertEquals("medium", body.getJSONObject("output_config").getString("effort"))
+        assertEquals("low", body.getJSONObject("output_config").getString("effort"))
+        assertEquals("disabled", body.getJSONObject("thinking").getString("type"))
+    }
+
+    @Test
+    fun sonnetAnswersWithoutInitialThinkingAndOpusKeepsIt() = runBlocking {
+        server.enqueue(finalStream())
+        server.enqueue(finalStream())
+        agent(FakeTorch(), Hooks(true)).run("ciao", opts(ClaudeModel.SONNET))
+        val sonnet = JSONObject(server.takeRequest().body.readUtf8())
+        assertEquals("between_tools", sonnet.getJSONObject("thinking").getString("type"))
+        agent(FakeTorch(), Hooks(true)).run("ciao", opts(ClaudeModel.OPUS))
+        assertFalse(JSONObject(server.takeRequest().body.readUtf8()).has("thinking"))
     }
 
     @Test

@@ -230,14 +230,17 @@ class MemyAgent(
             .maxTokens(16000L)
             .system(SystemPrompt.build(o.userName, o.webSearch, o.memories))
             .messages(history.toList())
-            // Effort contenuto: risposte rapide, adatte alla conversazione a voce.
-            .outputConfig(
-                OutputConfig.builder()
-                    .effort(if (o.model == ClaudeModel.HAIKU) OutputConfig.Effort.MEDIUM else OutputConfig.Effort.LOW)
-                    .build()
-            )
+            // Effort basso: risposte rapide, adatte alla conversazione a voce.
+            .outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.LOW).build())
             // Riutilizza la parte fissa (istruzioni + strumenti) tra una richiesta e l'altra: costa meno.
             .cacheControl(CacheControlEphemeral.builder().build())
+        // Per la voce conta la rapidità: Sonnet e Haiku rispondono senza la fase di ragionamento iniziale
+        // (Opus invece ragiona sempre). Sonnet 5.5 usa "between_tools", Haiku 5.5 "disabled".
+        when (o.model) {
+            ClaudeModel.SONNET -> builder.putAdditionalBodyProperty("thinking", JsonValue.from(mapOf("type" to "between_tools")))
+            ClaudeModel.HAIKU -> builder.putAdditionalBodyProperty("thinking", JsonValue.from(mapOf("type" to "disabled")))
+            ClaudeModel.OPUS -> Unit
+        }
         toolDefs.forEach { builder.addTool(it) }
         if (o.webSearch) {
             val location = UserLocation.builder()

@@ -8,15 +8,16 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /** Modelli Claude selezionabili. */
 enum class ClaudeModel(val id: String, val label: String, val description: String) {
-    OPUS("claude-opus-5-5", "Opus 5.5", "Il più intelligente. Ideale per compiti complessi."),
-    SONNET("claude-sonnet-5-5", "Sonnet 5.5", "Molto capace, più economico."),
-    HAIKU("claude-haiku-5-5", "Haiku 5.5", "Velocissimo ed economicissimo."),
+    OPUS("claude-opus-5-5", "Opus 5.5", "Il più intelligente, ma il più lento a rispondere: ragiona sempre prima di parlare."),
+    SONNET("claude-sonnet-5-5", "Sonnet 5.5", "Intelligente e rapido: il migliore per parlare a voce. Consigliato."),
+    HAIKU("claude-haiku-5-5", "Haiku 5.5", "Il più veloce ed economico, meno profondo."),
 }
 
 /** Chi trascrive la tua voce. */
 enum class SttEngine(val label: String, val description: String) {
-    AUTO("Automatico", "Usa Parakeet se è scaricato, altrimenti Google (se presente)."),
-    PARAKEET("Parakeet (offline)", "Il più preciso: modello NVIDIA sul telefono, gratis e senza internet. ~490 MB."),
+    AUTO("Automatico", "Il migliore disponibile: Whisper se c'è la chiave Groq, altrimenti Parakeet."),
+    WHISPER("Whisper large-v3 (Groq)", "Il più preciso in italiano, velocissimo. Gratis con una chiave Groq."),
+    PARAKEET("Parakeet (offline)", "Molto buono e senza internet: modello NVIDIA sul telefono. ~490 MB."),
     GOOGLE_DEVICE("Google (sul telefono)", "Gratis, se è installata l'app Google."),
 }
 
@@ -28,6 +29,7 @@ object DefaultVoice {
 
 data class SettingsState(
     val hasApiKey: Boolean,
+    val hasGroqKey: Boolean,
     val model: ClaudeModel,
     val sttEngine: SttEngine,
     val voiceId: String,
@@ -64,6 +66,7 @@ class MemySettings(context: Context) {
 
     private fun read() = SettingsState(
         hasApiKey = prefs.contains(KEY_API),
+        hasGroqKey = prefs.contains(KEY_GROQ),
         model = enumPref(KEY_MODEL, ClaudeModel.OPUS),
         sttEngine = enumPref(KEY_STT, SttEngine.AUTO),
         voiceId = prefs.getString(KEY_VOICE_ID, null) ?: DefaultVoice.ID,
@@ -81,12 +84,19 @@ class MemySettings(context: Context) {
         _state.value = read()
     }
 
-    fun apiKey(): String? = prefs.getString(KEY_API, null)?.let { SecureStore.decrypt(it) }
+    private fun secret(key: String): String? = prefs.getString(key, null)?.let { SecureStore.decrypt(it) }
 
-    fun setApiKey(value: String) = edit {
+    private fun setSecret(key: String, value: String) = edit {
         val v = value.trim()
-        if (v.isEmpty()) remove(KEY_API) else putString(KEY_API, SecureStore.encrypt(v))
+        if (v.isEmpty()) remove(key) else putString(key, SecureStore.encrypt(v))
     }
+
+    fun apiKey(): String? = secret(KEY_API)
+    fun setApiKey(value: String) = setSecret(KEY_API, value)
+
+    /** Chiave gratuita di Groq, per l'ascolto con Whisper. */
+    fun groqKey(): String? = secret(KEY_GROQ)
+    fun setGroqKey(value: String) = setSecret(KEY_GROQ, value)
 
     fun setModel(v: ClaudeModel) = edit { putString(KEY_MODEL, v.name) }
     fun setSttEngine(v: SttEngine) = edit { putString(KEY_STT, v.name) }
@@ -104,6 +114,7 @@ class MemySettings(context: Context) {
 
     private companion object {
         const val KEY_API = "api_key_enc"
+        const val KEY_GROQ = "groq_key_enc"
         const val KEY_MODEL = "model"
         const val KEY_STT = "stt_engine"
         const val KEY_VOICE_ID = "edge_voice_id"

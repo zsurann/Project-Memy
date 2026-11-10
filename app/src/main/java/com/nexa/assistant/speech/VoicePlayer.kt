@@ -189,6 +189,11 @@ class VoicePlayer(
 
     // ------------------------------------------------------------------ parlare
 
+    /** Apre in anticipo la connessione al servizio vocale: la prima frase della risposta partirà prima. */
+    fun prewarm() {
+        scope.launch(Dispatchers.IO) { runCatching { edge.prewarm() } }
+    }
+
     fun enqueue(text: String) {
         val clean = cleanForSpeech(text)
         if (clean.isBlank()) return

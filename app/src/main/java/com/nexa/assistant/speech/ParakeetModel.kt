@@ -54,6 +54,11 @@ class ParakeetModel(private val context: Context) {
         }
     }
 
+    /** Prepara il modello in memoria in anticipo, così la prima frase non aspetta il caricamento. */
+    fun warmUp() {
+        if (isInstalled()) Thread({ runCatching { recognizer() } }, "memy-asr-warmup").start()
+    }
+
     /** Trascrive un audio (16 kHz, valori tra -1 e 1). Bloccante. */
     fun transcribe(samples: FloatArray): String {
         if (samples.isEmpty()) return ""
