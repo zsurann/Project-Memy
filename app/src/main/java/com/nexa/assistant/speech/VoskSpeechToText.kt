@@ -1,5 +1,7 @@
 package com.nexa.assistant.speech
 
+import android.os.Handler
+import android.os.Looper
 import org.json.JSONObject
 import org.vosk.LibVosk
 import org.vosk.LogLevel
@@ -8,12 +10,19 @@ import org.vosk.Recognizer
 import org.vosk.android.RecognitionListener
 import org.vosk.android.SpeechService
 
-/** Riconoscimento vocale completamente offline, ideale per telefoni senza servizi Google. */
+/**
+ * Riconoscimento offline. A differenza di prima non si ferma alla prima pausa:
+ * accumula le frasi e chiude solo dopo un silenzio più lungo.
+ */
 class VoskSpeechToText(private val models: VoskModelManager) : SpeechToText {
+
+    override val name = "Offline (Vosk)"
 
     private var model: Model? = null
     private var service: SpeechService? = null
     private var recognizer: Recognizer? = null
+    private val main = Handler(Looper.getMainLooper())
+    private var finalize: Runnable? = null
 
     override fun isReady(): Boolean = models.isInstalled()
 
@@ -29,27 +38,56 @@ class VoskSpeechToText(private val models: VoskModelManager) : SpeechToText {
             val rec = Recognizer(loadModel(), SAMPLE_RATE).also { recognizer = it }
             val svc = SpeechService(rec, SAMPLE_RATE)
             service = svc
+            val collected = StringBuilder()
             var delivered = false
+            var lastPartial = ""
+
+            fun deliver() {
+                if (delivered) return
+                delivered = true
+                cancelFinalize()
+                stop()
+                listener.onFinal((collected.toString() + " " + lastPartial).trim())
+            }
+
+            fun scheduleFinalize(delayMs: Long) {
+                cancelFinalize()
+                finalize = Runnable { deliver() }.also { main.postDelayed(it, delayMs) }
+            }
+
+            listener.onReady()
             svc.startListening(object : RecognitionListener {
                 override fun onPartialResult(hypothesis: String?) {
                     val text = parse(hypothesis, "partial")
-                    if (text.isNotBlank()) listener.onPartial(text)
+                    if (text.isNotBlank() && text != lastPartial) {
+                        lastPartial = text
+                        cancelFinalize()
+                        listener.onLevel(0.55f + (text.length % 5) * 0.08f)
+                        listener.onPartial((collected.toString() + " " + text).trim())
+                    } else {
+                        listener.onLevel(0.08f)
+                    }
                 }
 
                 override fun onResult(hypothesis: String?) {
-                    // Vosk chiama onResult quando rileva una pausa: la frase è finita.
                     val text = parse(hypothesis, "text")
-                    if (text.isNotBlank() && !delivered) {
-                        delivered = true
-                        stop()
-                        listener.onFinal(text)
+                    lastPartial = ""
+                    if (text.isNotBlank()) {
+                        if (collected.isNotEmpty()) collected.append(' ')
+                        collected.append(text)
+                        listener.onPartial(collected.toString())
+                        // Aspetta un po': se l'utente continua a parlare, la frase prosegue.
+                        scheduleFinalize(END_SILENCE_MS)
                     }
                 }
 
                 override fun onFinalResult(hypothesis: String?) {
-                    if (delivered) return
-                    delivered = true
-                    listener.onFinal(parse(hypothesis, "text"))
+                    val text = parse(hypothesis, "text")
+                    if (text.isNotBlank() && !collected.endsWith(text)) {
+                        if (collected.isNotEmpty()) collected.append(' ')
+                        collected.append(text)
+                    }
+                    deliver()
                 }
 
                 override fun onError(exception: Exception?) {
@@ -59,19 +97,20 @@ class VoskSpeechToText(private val models: VoskModelManager) : SpeechToText {
                     listener.onError(exception?.message ?: "Errore del microfono")
                 }
 
-                override fun onTimeout() {
-                    if (delivered) return
-                    delivered = true
-                    stop()
-                    listener.onFinal("")
-                }
+                override fun onTimeout() = deliver()
             }, LISTEN_TIMEOUT_MS)
         } catch (e: Exception) {
-            listener.onError("Impossibile avviare il riconoscimento vocale: ${e.message}")
+            listener.onError("Impossibile avviare il riconoscimento offline: ${e.message}")
         }
     }
 
+    private fun cancelFinalize() {
+        finalize?.let { main.removeCallbacks(it) }
+        finalize = null
+    }
+
     override fun stop() {
+        cancelFinalize()
         service?.let {
             it.stop()
             it.shutdown()
@@ -92,6 +131,7 @@ class VoskSpeechToText(private val models: VoskModelManager) : SpeechToText {
 
     private companion object {
         const val SAMPLE_RATE = 16000f
-        const val LISTEN_TIMEOUT_MS = 12_000
+        const val LISTEN_TIMEOUT_MS = 30_000
+        const val END_SILENCE_MS = 1_100L
     }
 }

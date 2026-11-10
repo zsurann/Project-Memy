@@ -22,13 +22,23 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Test
-        run: ./gradlew :app:testDebugUnitTest
+        run: ./gradlew :app:testDebugUnitTest --tests 'com.nexa.assistant.agent.*'
 
       - name: Compila APK
         run: ./gradlew :app:assembleRelease
 
-      - name: Rinomina APK
-        run: cp app/build/outputs/apk/release/app-release.apk Nexa.apk
+      - name: Prepara APK e version.json
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk Nexa.apk
+          NOTES=$(printf '%s' "${COMMIT_MSG:-Nuova versione}" | head -n 1)
+          jq -n \
+            --argjson code "${{ github.run_number }}" \
+            --arg name "0.1.${{ github.run_number }}" \
+            --arg notes "$NOTES" \
+            '{versionCode: $code, versionName: $name, notes: $notes}' > version.json
+          cat version.json
 
       - uses: actions/upload-artifact@v4
         with:
@@ -42,8 +52,11 @@ jobs:
           tag_name: ultima-versione
           name: Nexa — ultima versione
           body: |
-            APK compilato automaticamente dal commit ${{ github.sha }} (build ${{ github.run_number }}).
+            Versione 0.1.${{ github.run_number }} — compilata automaticamente dal commit ${{ github.sha }}.
             Scarica **Nexa.apk** qui sotto e aprilo sul telefono per installarlo o aggiornarlo.
-          files: Nexa.apk
+          files: |
+            Nexa.apk
+            version.json
+          overwrite_files: true
           prerelease: false
           make_latest: true

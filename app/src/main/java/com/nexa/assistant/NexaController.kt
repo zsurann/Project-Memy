@@ -4,10 +4,11 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.nexa.assistant.agent.NexaAgent
-import com.nexa.assistant.data.SpeechEngine
-import com.nexa.assistant.speech.Speaker
+import com.nexa.assistant.data.SttEngine
+import com.nexa.assistant.speech.CloudSpeechToText
 import com.nexa.assistant.speech.SpeechToText
 import com.nexa.assistant.speech.SystemSpeechToText
+import com.nexa.assistant.speech.VoicePlayer
 import com.nexa.assistant.speech.VoskModelManager
 import com.nexa.assistant.speech.VoskSpeechToText
 import com.nexa.assistant.tools.phoneTools
@@ -16,18 +17,27 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.Normalizer
+import java.util.concurrent.atomic.AtomicLong
 
-enum class Phase { IDLE, LISTENING, THINKING, SPEAKING, CONFIRMING }
+enum class Phase { IDLE, LISTENING, PROCESSING, THINKING, SPEAKING, CONFIRMING }
 
-data class ChatLine(val fromUser: Boolean, val text: String, val isNotice: Boolean = false)
+data class ChatLine(
+    val id: Long,
+    val fromUser: Boolean,
+    val text: String,
+    val isNotice: Boolean = false,
+    val streaming: Boolean = false,
+)
 
 data class UiState(
     val phase: Phase = Phase.IDLE,
@@ -37,7 +47,7 @@ data class UiState(
     val pendingConfirmation: String? = null,
     val modelDownloadProgress: Float? = null,
     val voiceModelInstalled: Boolean = false,
-    val speakerStatus: Speaker.Status = Speaker.Status.LOADING,
+    val listenerName: String = "",
 )
 
 /** Coordina voce → Claude → azioni → voce. Vive a livello di app (vedi [NexaApp]). */
@@ -45,14 +55,29 @@ class NexaController(private val app: NexaApp) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val settings get() = app.settings
+    private val ids = AtomicLong()
 
     private val voskModels = VoskModelManager(app)
     private val vosk = VoskSpeechToText(voskModels)
-    private val system = SystemSpeechToText(app)
-    private val speaker = Speaker(app)
+    val googleDevice = SystemSpeechToText(app, googleOnly = true)
+    private val anySystem = SystemSpeechToText(app, googleOnly = false)
+    private val googleCloud = CloudSpeechToText.googleCloud { settings.googleKey() }
+    private val openAi = CloudSpeechToText.openAi { settings.openAiKey() }
+    private var activeStt: SpeechToText? = null
+
+    val voice = VoicePlayer(app, settings).also { v ->
+        v.onFallback = { msg -> scope.launch { notice(msg) } }
+    }
 
     private val _state = MutableStateFlow(UiState(voiceModelInstalled = voskModels.isInstalled()))
     val state: StateFlow<UiState> = _state.asStateFlow()
+
+    /** Volume della voce (0..1), separato dallo stato per non ridisegnare tutta l'interfaccia. */
+    private val _level = MutableStateFlow(0f)
+    val level: StateFlow<Float> = _level.asStateFlow()
+
+    /** L'app è visibile? Il microfono si può usare solo in primo piano. */
+    var inForeground = false
 
     private var job: Job? = null
     private var confirmation: CompletableDeferred<Boolean>? = null
@@ -60,72 +85,124 @@ class NexaController(private val app: NexaApp) {
     private val agent = NexaAgent(phoneTools(app), object : NexaAgent.Hooks {
         override suspend fun confirm(prompt: String): Boolean =
             withContext(Dispatchers.Main) { askConfirmation(prompt) }
+
         override fun onToolUse(toolName: String) {
             _state.update { it.copy(toolInUse = toolName) }
+        }
+
+        override fun onSentence(sentence: String) {
+            voice.enqueue(sentence)
+            _state.update { if (it.phase == Phase.THINKING) it.copy(phase = Phase.SPEAKING) else it }
+        }
+
+        override fun onText(textSoFar: String) {
+            _state.update { s ->
+                val last = s.lines.lastOrNull()
+                if (last != null && last.streaming) s.copy(lines = s.lines.dropLast(1) + last.copy(text = textSoFar)) else s
+            }
         }
     })
 
     init {
+        // Animazione della sfera mentre Nexa parla.
         scope.launch {
-            val st = speaker.status()
-            _state.update { it.copy(speakerStatus = st) }
+            var t = 0f
+            while (isActive) {
+                if (voice.speaking.value && _state.value.phase != Phase.LISTENING) {
+                    t += 0.18f
+                    _level.value = 0.35f + 0.3f * kotlin.math.abs(kotlin.math.sin(t)) + 0.15f * kotlin.math.abs(kotlin.math.sin(t * 2.3f))
+                } else if (_state.value.phase != Phase.LISTENING) {
+                    _level.value = (_level.value * 0.85f)
+                }
+                delay(50)
+            }
         }
     }
-
-    private fun stt(): SpeechToText =
-        if (settings.state.value.speechEngine == SpeechEngine.SYSTEM && system.isReady()) system else vosk
 
     fun hasMicPermission() =
         ContextCompat.checkSelfPermission(app, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
+    /** Sceglie il motore di ascolto in base alle impostazioni e a cosa è disponibile. */
+    fun resolveStt(): SpeechToText? = when (settings.state.value.sttEngine) {
+        SttEngine.AUTO -> listOf(googleDevice, googleCloud, openAi, vosk, anySystem).firstOrNull { it.isReady() }
+        SttEngine.GOOGLE_DEVICE -> googleDevice.takeIf { it.isReady() }
+        SttEngine.GOOGLE_CLOUD -> googleCloud.takeIf { it.isReady() }
+        SttEngine.OPENAI -> openAi.takeIf { it.isReady() }
+        SttEngine.VOSK -> vosk.takeIf { it.isReady() }
+    }
+
     // ------------------------------------------------------------------ ascolto
 
-    /** Tocco sul microfono: inizia ad ascoltare, oppure interrompe quello che Nexa sta facendo. */
-    fun onMicPressed() {
+    /** Tocco sulla sfera: ascolta, interrompe la voce per parlare subito, oppure annulla. */
+    fun onOrbPressed() {
         when (_state.value.phase) {
             Phase.IDLE -> startListening()
+            Phase.SPEAKING -> {
+                job?.cancel(); voice.stop(); finishStreamingLine()
+                _state.update { it.copy(phase = Phase.IDLE, toolInUse = null) }
+                startListening()
+            }
             Phase.CONFIRMING -> Unit
             else -> stopAll()
         }
     }
 
     fun startListening() {
-        if (!readyOrExplain()) return
-        speaker.stop()
-        _state.update { it.copy(phase = Phase.LISTENING, partial = "") }
-        stt().start(object : SpeechToText.Listener {
+        val stt = readyOrExplain() ?: return
+        voice.stop()
+        stopStt()
+        activeStt = stt
+        _state.update { it.copy(phase = Phase.LISTENING, partial = "", listenerName = stt.name) }
+        stt.start(object : SpeechToText.Listener {
+            override fun onLevel(level: Float) {
+                _level.value = _level.value * 0.4f + level * 0.6f
+            }
+
             override fun onPartial(text: String) {
                 _state.update { it.copy(partial = text) }
             }
 
+            override fun onProcessing() {
+                _state.update { if (it.phase == Phase.LISTENING) it.copy(phase = Phase.PROCESSING) else it }
+            }
+
             override fun onFinal(text: String) {
+                activeStt = null
                 _state.update { it.copy(partial = "") }
-                if (text.isBlank()) {
-                    _state.update { it.copy(phase = Phase.IDLE) }
-                } else submit(text)
+                if (text.isBlank()) _state.update { it.copy(phase = Phase.IDLE) } else submit(text)
             }
 
             override fun onError(message: String) {
+                activeStt = null
                 notice(message)
                 _state.update { it.copy(phase = Phase.IDLE, partial = "") }
             }
         })
     }
 
-    private fun readyOrExplain(): Boolean {
+    private fun stopStt() {
+        activeStt?.stop()
+        activeStt = null
+    }
+
+    private fun readyOrExplain(): SpeechToText? {
         if (!hasMicPermission()) {
-            notice("Serve il permesso del microfono.")
-            return false
+            notice("Serve il permesso del microfono."); return null
         }
         if (!settings.state.value.hasApiKey) {
-            notice("Inserisci prima la tua chiave API di Claude nelle impostazioni (icona ingranaggio).")
-            return false
+            notice("Inserisci prima la tua chiave API di Claude nelle impostazioni."); return null
         }
-        if (!stt().isReady()) {
-            notice("Scarica prima la voce offline italiana nelle impostazioni (circa 50 MB, una volta sola).")
-            return false
+        return resolveStt() ?: run {
+            notice(
+                when (settings.state.value.sttEngine) {
+                    SttEngine.GOOGLE_DEVICE -> "Il riconoscimento di Google non è disponibile su questo telefono. Scegli un altro motore nelle impostazioni."
+                    SttEngine.GOOGLE_CLOUD -> "Inserisci la chiave Google Cloud nelle impostazioni."
+                    SttEngine.OPENAI -> "Inserisci la chiave OpenAI nelle impostazioni."
+                    else -> "Configura il riconoscimento vocale nelle impostazioni (ad esempio scarica la voce offline)."
+                }
+            )
+            null
         }
-        return true
     }
 
     // ------------------------------------------------------------------ elaborazione
@@ -136,70 +213,72 @@ class NexaController(private val app: NexaApp) {
         if (clean.isEmpty()) return
         val key = settings.apiKey()
         if (key.isNullOrBlank()) {
-            notice("Inserisci prima la tua chiave API di Claude nelle impostazioni.")
-            return
+            notice("Inserisci prima la tua chiave API di Claude nelle impostazioni."); return
         }
-        addLine(ChatLine(fromUser = true, text = clean))
         job?.cancel()
+        voice.stop()
+        addLine(ChatLine(ids.incrementAndGet(), fromUser = true, text = clean))
+        addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = "", streaming = true))
         job = scope.launch {
             _state.update { it.copy(phase = Phase.THINKING, toolInUse = null) }
             val s = settings.state.value
             val reply = try {
-                agent.run(clean, key, s.model, s.userName)
+                agent.run(clean, NexaAgent.Options(key, s.model, s.userName, s.webSearch))
             } catch (e: NexaAgent.AgentException) {
-                e.message ?: "Si è verificato un errore."
+                (e.message ?: "Si è verificato un errore.").also { voice.enqueue(it) }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
+                finishStreamingLine(); throw e
             } catch (e: Exception) {
-                "Si è verificato un errore imprevisto: ${e.message}"
+                "Si è verificato un errore imprevisto: ${e.message}".also { voice.enqueue(it) }
             }
-            addLine(ChatLine(fromUser = false, text = reply))
-            say(reply)
-            _state.update { it.copy(phase = Phase.IDLE, toolInUse = null) }
-            if (settings.state.value.autoListenAfterReply && !endsConversation(reply)) startListening()
+            replaceStreamingLine(reply)
+            _state.update { it.copy(toolInUse = null, phase = if (voice.speaking.value) Phase.SPEAKING else it.phase) }
+            voice.awaitIdle()
+            _state.update { it.copy(phase = Phase.IDLE) }
+            if (settings.state.value.continuousConversation && inForeground) startListening()
         }
     }
 
-    private suspend fun say(text: String) {
-        _state.update { it.copy(phase = Phase.SPEAKING) }
-        speaker.rate = settings.state.value.speechRate
-        speaker.speak(text)
+    private fun replaceStreamingLine(text: String) = _state.update { s ->
+        val last = s.lines.lastOrNull()
+        if (last != null && last.streaming) s.copy(lines = s.lines.dropLast(1) + last.copy(text = text, streaming = false))
+        else s.copy(lines = s.lines + ChatLine(ids.incrementAndGet(), false, text))
     }
 
-    private fun endsConversation(reply: String) = !reply.trimEnd().endsWith("?")
+    private fun finishStreamingLine() = _state.update { s ->
+        val last = s.lines.lastOrNull()
+        when {
+            last == null || !last.streaming -> s
+            last.text.isBlank() -> s.copy(lines = s.lines.dropLast(1))
+            else -> s.copy(lines = s.lines.dropLast(1) + last.copy(streaming = false))
+        }
+    }
 
     // ------------------------------------------------------------------ conferme
 
     private suspend fun askConfirmation(prompt: String): Boolean {
         val deferred = CompletableDeferred<Boolean>()
         confirmation = deferred
-        addLine(ChatLine(fromUser = false, text = prompt))
+        voice.awaitIdle()
         _state.update { it.copy(phase = Phase.CONFIRMING, pendingConfirmation = prompt) }
-        speaker.rate = settings.state.value.speechRate
-        speaker.speak(prompt)
+        voice.speakNow(prompt)
 
-        // Dopo aver parlato, ascolta un "sì" o un "no" (i pulsanti a schermo funzionano comunque).
-        if (!deferred.isCompleted && hasMicPermission() && stt().isReady()) {
-            stt().start(object : SpeechToText.Listener {
-                override fun onPartial(text: String) {
-                    _state.update { it.copy(partial = text) }
-                }
-
+        // Dopo aver parlato, ascolta un "sì" o un "no" (i pulsanti funzionano comunque).
+        val stt = resolveStt()
+        if (!deferred.isCompleted && hasMicPermission() && stt != null) {
+            activeStt = stt
+            stt.start(object : SpeechToText.Listener {
+                override fun onLevel(level: Float) { _level.value = level }
+                override fun onPartial(text: String) { _state.update { it.copy(partial = text) } }
                 override fun onFinal(text: String) {
                     _state.update { it.copy(partial = "") }
-                    if (text.isNotBlank()) addLine(ChatLine(fromUser = true, text = text))
-                    when (parseYesNo(text)) {
-                        true -> deferred.complete(true)
-                        false -> deferred.complete(false)
-                        null -> Unit // risposta non chiara: resta in attesa dei pulsanti
-                    }
+                    parseYesNo(text)?.let { deferred.complete(it) }
                 }
-
                 override fun onError(message: String) {}
             })
         }
         val answer = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { deferred.await() } ?: false
-        stt().stop()
+        stopStt()
         confirmation = null
         _state.update { it.copy(phase = Phase.THINKING, pendingConfirmation = null, partial = "") }
         return answer
@@ -214,7 +293,7 @@ class NexaController(private val app: NexaApp) {
         val t = Normalizer.normalize(text.lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{M}"), "")
         val words = t.split(Regex("[^a-z]+")).filter { it.isNotEmpty() }.toSet()
         val no = setOf("no", "annulla", "stop", "aspetta", "fermo", "lascia", "niente", "negativo")
-        val yes = setOf("si", "certo", "conferma", "confermo", "ok", "okay", "vai", "procedi", "esatto", "invia", "chiama", "sicuro", "giusto")
+        val yes = setOf("si", "certo", "conferma", "confermo", "ok", "okay", "vai", "procedi", "esatto", "invia", "chiama", "sicuro", "giusto", "perfetto")
         return when {
             words.any { it in no } -> false
             words.any { it in yes } -> true
@@ -227,9 +306,9 @@ class NexaController(private val app: NexaApp) {
     fun stopAll() {
         job?.cancel()
         confirmation?.complete(false)
-        vosk.stop()
-        system.stop()
-        speaker.stop()
+        stopStt()
+        voice.stop()
+        finishStreamingLine()
         _state.update { it.copy(phase = Phase.IDLE, partial = "", toolInUse = null, pendingConfirmation = null) }
     }
 
@@ -245,29 +324,33 @@ class NexaController(private val app: NexaApp) {
             _state.update { it.copy(modelDownloadProgress = 0f) }
             try {
                 voskModels.download { p -> _state.update { it.copy(modelDownloadProgress = p) } }
-                notice("Voce offline italiana installata. Ora puoi parlare con Nexa!")
+                notice("Riconoscimento offline italiano installato.")
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                notice("Download della voce non riuscito: ${e.message}. Controlla la connessione e riprova.")
+                notice("Download non riuscito: ${e.message}. Controlla la connessione e riprova.")
             }
-            _state.update {
-                it.copy(modelDownloadProgress = null, voiceModelInstalled = voskModels.isInstalled())
-            }
+            _state.update { it.copy(modelDownloadProgress = null, voiceModelInstalled = voskModels.isInstalled()) }
         }
     }
 
     fun testVoice() {
-        scope.launch {
-            speaker.rate = settings.state.value.speechRate
-            speaker.speak("Ciao, sono Nexa. Così suona la mia voce.")
-        }
+        voice.stop()
+        val name = settings.state.value.userName
+        voice.enqueue("Ciao${if (name.isNotBlank()) " $name" else ""}, sono Nexa. È così che suona la mia voce: ti piace?")
     }
 
-    private fun notice(text: String) = addLine(ChatLine(fromUser = false, text = text, isNotice = true))
+    private fun notice(text: String) = addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = text, isNotice = true))
 
     private fun addLine(line: ChatLine) {
         _state.update { it.copy(lines = (it.lines + line).takeLast(MAX_LINES)) }
+    }
+
+    /** Solo per gli screenshot di prova. */
+    @androidx.annotation.VisibleForTesting
+    internal fun setPreviewState(state: UiState, level: Float) {
+        _state.value = state
+        _level.value = level
     }
 
     private companion object {

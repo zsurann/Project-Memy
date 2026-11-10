@@ -7,7 +7,9 @@ Poi ti risponde a voce.
 Pensata per l'installazione diretta tramite APK, senza Play Store, e compatibile con telefoni **senza servizi Google**
 (ad esempio vivo con OriginOS versione Cina).
 
-## Cosa sa fare (Fase 1)
+![Interfaccia di Nexa](docs/nexa-design.png)
+
+## Cosa sa fare
 
 | Comando di esempio | Cosa fa |
 |---|---|
@@ -31,19 +33,49 @@ Le azioni delicate (chiamate e SMS) chiedono sempre conferma: rispondi "sì" o "
 ## Come funziona
 
 ```
-Microfono → riconoscimento vocale (offline, Vosk) → Claude (decide quali strumenti usare)
-         → strumenti sul telefono → risposta di Claude → sintesi vocale
+Microfono → riconoscimento vocale → Claude (in streaming, con strumenti e ricerca web)
+         → azioni sul telefono → voce neurale, frase per frase
 ```
 
-- **Riconoscimento vocale offline (Vosk)**: funziona senza Google e senza internet. Al primo avvio scarica il modello
-  italiano, circa 50 MB, una volta sola.
-- **Cervello**: Claude Haiku 5.5 di default (veloce ed economico). Nelle impostazioni puoi passare a Sonnet 5.5 o a Opus 5.5.
-- **Voce**: usa il motore di sintesi vocale installato sul telefono.
+- **Cervello**: Claude Opus 5.5 di default, il più intelligente. Nelle impostazioni puoi scegliere Sonnet 5.5 o Haiku 5.5.
+  Con Opus e Sonnet Nexa può **cercare sul web** (meteo, notizie, risultati sportivi).
+- **Streaming**: Nexa inizia a parlare appena ha scritto la prima frase, senza aspettare la risposta completa.
+- **Conversazione continua**: dopo ogni risposta torna ad ascoltarti. Se tocchi la sfera mentre parla, la interrompi.
 
-## Costi
+### Ascolto (riconoscimento vocale)
 
-Serve una chiave API di Anthropic: l'abbonamento Claude Pro **non** include l'API. L'API si paga a consumo, con una
-ricarica prepagata. Con Haiku 5.5 un comando costa circa 0,0005 $: con 50 comandi al giorno si spende circa 1 € al mese.
+| Motore | Qualità | Note |
+|---|---|---|
+| Automatico | — | Sceglie il migliore disponibile |
+| Google sul telefono | ★★★★ | Gratis, ma serve l'app Google: di solito manca sui telefoni cinesi |
+| **Google Cloud** | ★★★★★ | 60 minuti al mese gratis, poi circa 0,016 $ al minuto. Serve una chiave Google Cloud |
+| OpenAI | ★★★★★ | Circa 0,006 $ al minuto. Serve una chiave OpenAI |
+| Offline (Vosk) | ★★ | Senza internet. Va scaricato il modello italiano (50 MB) |
+
+### Voce (risposta)
+
+| Voce | Qualità | Note |
+|---|---|---|
+| **Google Cloud Chirp 3 HD** | ★★★★★ | Voci italiane neurali, 1 milione di caratteri al mese gratis |
+| OpenAI | ★★★★★ | Molto espressiva |
+| ElevenLabs | ★★★★★ | La più realistica; piano gratuito limitato |
+| Voce del telefono | ★★ | Gratis ma robotica |
+
+#### Creare la chiave Google Cloud (una sola chiave per voce e ascolto)
+
+1. Vai su <https://console.cloud.google.com>, crea un progetto e attiva la fatturazione: serve, ma le soglie gratuite
+   coprono un uso personale.
+2. In *API e servizi → Libreria* attiva **Cloud Text-to-Speech API** e **Cloud Speech-to-Text API**.
+3. In *API e servizi → Credenziali* tocca **Crea credenziali → Chiave API**. Ti consiglio di limitarla a quelle due API.
+4. Incollala in Nexa: *Impostazioni → Chiavi dei servizi → Google Cloud*. Poi scegli Google Cloud in "Ascolto" e in "Voce".
+
+## Aggiornamenti automatici
+
+Ogni push su GitHub compila l'APK e aggiorna la release "ultima-versione" con `Nexa.apk` e `version.json`.
+All'apertura (al massimo ogni 30 minuti) Nexa legge `version.json`; se trova una versione più nuova la scarica e la
+installa. La prima volta Android ti chiede di **consentire a Nexa di installare app**. Da Android 12, dopo il primo
+aggiornamento installato da Nexa, i successivi possono avvenire senza conferma. Puoi disattivarli in
+*Impostazioni → Aggiornamenti*.
 
 ## Installazione sul telefono
 
@@ -75,8 +107,9 @@ restano dove sono.
 Servono JDK 17 o successivo e l'SDK Android (piattaforma 36).
 
 ```bash
-./gradlew :app:testDebugUnitTest   # test dell'agente (con un server Claude finto)
-./gradlew :app:assembleRelease     # APK in app/build/outputs/apk/release/
+./gradlew :app:testDebugUnitTest --tests 'com.nexa.assistant.agent.*'   # test dell'agente (server Claude finto)
+./gradlew :app:testDebugUnitTest --tests '*ScreenshotTest*'             # immagini dell'interfaccia in app/build/screenshots
+./gradlew :app:assembleRelease                                          # APK in app/build/outputs/apk/release/
 ```
 
 Ogni push su GitHub compila l'APK in automatico (`.github/workflows/build-apk.yml`) e lo pubblica nella release
@@ -104,7 +137,8 @@ app/src/main/java/com/nexa/assistant/
 ├── tools/
 │   ├── NexaTool.kt         # Interfaccia degli strumenti
 │   └── PhoneTools.kt       # Gli strumenti della Fase 1
-├── speech/                 # Vosk (offline), riconoscitore di sistema, sintesi vocale
+├── speech/                 # Ascolto (Google, Google Cloud, OpenAI, Vosk) e voci (Google, OpenAI, ElevenLabs)
+├── update/                 # Aggiornamento automatico da GitHub
 ├── data/                   # Impostazioni e chiave API cifrata con l'Android Keystore
 └── ui/                     # Interfaccia Jetpack Compose
 ```

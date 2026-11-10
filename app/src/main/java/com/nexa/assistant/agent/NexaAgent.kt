@@ -11,6 +11,7 @@ import com.anthropic.errors.OverloadedException
 import com.anthropic.errors.PermissionDeniedException
 import com.anthropic.errors.RateLimitException
 import com.anthropic.errors.UnauthorizedException
+import com.anthropic.helpers.MessageAccumulator
 import com.anthropic.models.messages.CacheControlEphemeral
 import com.anthropic.models.messages.ContentBlockParam
 import com.anthropic.models.messages.Message
@@ -21,16 +22,24 @@ import com.anthropic.models.messages.StopReason
 import com.anthropic.models.messages.Tool
 import com.anthropic.models.messages.ToolResultBlockParam
 import com.anthropic.models.messages.ToolUseBlock
+import com.anthropic.models.messages.UserLocation
+import com.anthropic.models.messages.WebSearchTool20260209
 import com.nexa.assistant.data.ClaudeModel
 import com.nexa.assistant.tools.NexaTool
 import com.nexa.assistant.tools.ToolInput
 import com.nexa.assistant.tools.ToolResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
+import java.time.ZoneId
+import java.util.Locale
+import kotlin.coroutines.coroutineContext
 
 /**
- * L'agente: manda la richiesta a Claude, esegue gli strumenti che Claude sceglie,
- * rimanda i risultati e ripete finché Claude non dà la risposta finale.
+ * L'agente: manda la richiesta a Claude in streaming, esegue gli strumenti che Claude sceglie,
+ * rimanda i risultati e ripete finché Claude non ha finito. Il testo arriva frase per frase,
+ * così la voce inizia a parlare quasi subito.
  */
 class NexaAgent(
     private val tools: List<NexaTool>,
@@ -42,9 +51,22 @@ class NexaAgent(
         /** Chiede all'utente conferma per un'azione delicata. */
         suspend fun confirm(prompt: String): Boolean
 
-        /** Notifica (per la UI) che Nexa sta usando uno strumento. */
+        /** Nexa sta usando uno strumento (o "web_search"). */
         fun onToolUse(toolName: String) {}
+
+        /** Una frase completa, pronta da leggere ad alta voce. */
+        fun onSentence(sentence: String) {}
+
+        /** Il testo visibile della risposta finora (per la UI). */
+        fun onText(textSoFar: String) {}
     }
+
+    data class Options(
+        val apiKey: String,
+        val model: ClaudeModel,
+        val userName: String,
+        val webSearch: Boolean,
+    )
 
     class AgentException(message: String) : Exception(message)
 
@@ -61,47 +83,83 @@ class NexaAgent(
         history.clear()
     }
 
-    suspend fun run(
-        userText: String,
-        apiKey: String,
-        model: ClaudeModel,
-        userName: String,
-    ): String = withContext(Dispatchers.IO) {
+    suspend fun run(userText: String, options: Options): String = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         if (now - lastActivity > CONVERSATION_TIMEOUT_MS || history.size > MAX_HISTORY) history.clear()
         lastActivity = now
 
-        val api = clientFor(apiKey)
+        val api = clientFor(options.apiKey)
         val checkpoint = history.size
-        history += MessageParam.ofUser(userText)
+        history += MessageParam.ofUser("${SystemPrompt.timeContext()} $userText")
+        val spoken = StringBuilder()
+        val job = coroutineContext[Job]
 
         try {
             repeat(MAX_STEPS) {
-                val response = api.messages().create(buildParams(model, userName))
+                val response = streamOnce(api, buildParams(options), spoken, job)
                 history += response.toParam()
 
                 when (response.stopReason().orElse(StopReason.END_TURN)) {
                     StopReason.TOOL_USE -> history += runTools(response)
-                    StopReason.PAUSE_TURN -> Unit // il server chiede di proseguire: rimandiamo la richiesta
+                    StopReason.PAUSE_TURN -> Unit // ricerca web lunga: il server chiede di proseguire
                     StopReason.REFUSAL -> {
-                        // Una richiesta rifiutata non deve restare nella memoria della conversazione.
                         history.clear()
-                        return@withContext "Mi dispiace, non posso aiutarti con questa richiesta."
+                        val msg = "Mi dispiace, su questo non posso aiutarti."
+                        hooks.onSentence(msg)
+                        return@withContext msg
                     }
                     else -> {
                         lastActivity = System.currentTimeMillis()
-                        return@withContext textOf(response).ifBlank { "Fatto." }
+                        val text = spoken.toString().trim()
+                        if (text.isEmpty()) {
+                            val msg = "Ecco fatto."
+                            hooks.onSentence(msg)
+                            return@withContext msg
+                        }
+                        return@withContext text
                     }
                 }
             }
-            "Ho fatto troppi passaggi senza finire. Prova a chiedermelo in modo più semplice."
+            "Ho fatto troppi passaggi senza finire. Prova a chiedermelo in un altro modo."
         } catch (e: AnthropicServiceException) {
             rollback(checkpoint)
             throw AgentException(describe(e))
         } catch (e: AnthropicIoException) {
             rollback(checkpoint)
+            if (job?.isActive == false) throw CancellationException("annullato")
             throw AgentException("Non riesco a collegarmi a internet. Controlla la connessione.")
+        } catch (e: CancellationException) {
+            rollback(checkpoint)
+            throw e
         }
+    }
+
+    /** Una chiamata in streaming: consegna le frasi man mano e restituisce il messaggio completo. */
+    private fun streamOnce(api: AnthropicClient, params: MessageCreateParams, spoken: StringBuilder, job: Job?): Message {
+        val accumulator = MessageAccumulator.create()
+        val splitter = SentenceSplitter { hooks.onSentence(it) }
+        if (spoken.isNotEmpty()) spoken.append(' ')
+        api.messages().createStreaming(params).use { stream ->
+            val iterator = stream.stream().iterator()
+            while (iterator.hasNext()) {
+                if (job?.isActive == false) throw CancellationException("annullato")
+                val event = iterator.next()
+                accumulator.accumulate(event)
+                event.contentBlockStart().ifPresent { start ->
+                    start.contentBlock().serverToolUse().ifPresent { hooks.onToolUse("web_search") }
+                }
+                event.contentBlockDelta().ifPresent { d ->
+                    d.delta().text().ifPresent { t ->
+                        spoken.append(t.text())
+                        splitter.feed(t.text())
+                        hooks.onText(spoken.toString().trim())
+                    }
+                }
+                event.contentBlockStop().ifPresent { splitter.flush() }
+            }
+        }
+        splitter.flush()
+        return accumulator.message()
     }
 
     /** In caso di errore si torna allo stato precedente, così la cronologia resta valida. */
@@ -144,26 +202,39 @@ class NexaAgent(
             ToolResult.error(e.message ?: "Parametri non validi")
         } catch (e: SecurityException) {
             ToolResult.error("Permesso mancante: ${e.message}. L'utente deve concederlo nelle impostazioni di Nexa.")
-        } catch (e: kotlinx.coroutines.CancellationException) {
+        } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             ToolResult.error("Errore durante l'azione: ${e.message}")
         }
     }
 
-    private fun buildParams(model: ClaudeModel, userName: String): MessageCreateParams {
+    private fun buildParams(o: Options): MessageCreateParams {
+        val web = o.webSearch && o.model.supportsWebSearch
         val builder = MessageCreateParams.builder()
-            .model(model.id)
-            .maxTokens(8000L)
-            .system(SystemPrompt.build(userName))
+            .model(o.model.id)
+            .maxTokens(16000L)
+            .system(SystemPrompt.build(o.userName, web))
             .messages(history.toList())
-            // Effort basso: risposte veloci, ideali per la voce, e meno token spesi.
+            // Effort basso: risposte rapide, adatte alla conversazione a voce.
             .outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.LOW).build())
             // Riutilizza la parte fissa (istruzioni + strumenti) tra una richiesta e l'altra: costa meno.
             .cacheControl(CacheControlEphemeral.builder().build())
         toolDefs.forEach { builder.addTool(it) }
-
-        if (model != ClaudeModel.HAIKU) {
+        if (web) {
+            builder.addTool(
+                WebSearchTool20260209.builder()
+                    .maxUses(3L)
+                    .userLocation(
+                        UserLocation.builder()
+                            .country(Locale.getDefault().country.ifBlank { "IT" })
+                            .timezone(ZoneId.systemDefault().id)
+                            .build()
+                    )
+                    .build()
+            )
+        }
+        if (o.model != ClaudeModel.HAIKU) {
             // Se Claude rifiuta per un falso allarme di sicurezza, il server riprova con un modello alternativo.
             builder.putAdditionalHeader("anthropic-beta", "server-side-fallback-2026-07-01")
             builder.putAdditionalBodyProperty("fallbacks", JsonValue.from("default"))
@@ -183,9 +254,6 @@ class NexaAgent(
         }
         return client!!
     }
-
-    private fun textOf(message: Message): String =
-        message.content().mapNotNull { it.text().orElse(null)?.text() }.joinToString(" ").trim()
 
     private fun toApiTool(tool: NexaTool): Tool {
         val props = Tool.InputSchema.Properties.builder()
@@ -217,6 +285,6 @@ class NexaAgent(
     private companion object {
         const val MAX_STEPS = 10
         const val MAX_HISTORY = 60
-        const val CONVERSATION_TIMEOUT_MS = 10 * 60 * 1000L
+        const val CONVERSATION_TIMEOUT_MS = 15 * 60 * 1000L
     }
 }

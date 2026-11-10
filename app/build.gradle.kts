@@ -19,6 +19,12 @@ android {
 
         // Vivo X300 Pro e quasi tutti i telefoni moderni sono a 64 bit ARM.
         ndk { abiFilters += listOf("arm64-v8a") }
+
+        // Da qui l'app scarica gli aggiornamenti (release "ultima-versione" del repository GitHub).
+        buildConfigField(
+            "String", "UPDATE_BASE_URL",
+            "\"https://github.com/zsurann/Project-Nexa/releases/download/ultima-versione\"",
+        )
     }
 
     signingConfigs {
@@ -53,9 +59,15 @@ android {
     }
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all { test ->
+            // Facoltativo: mirror di Maven Central per Robolectric (utile se Maven Central limita le richieste).
+            System.getenv("ROBOLECTRIC_REPO")?.let { test.systemProperty("robolectric.dependency.repo.url", it) }
+        }
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     packaging {
         resources {
@@ -75,6 +87,7 @@ android {
 dependencies {
     // Cervello: SDK ufficiale Anthropic (Claude)
     implementation("com.anthropic:anthropic-java:3.7.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Riconoscimento vocale offline (funziona senza servizi Google)
     implementation("com.alphacephei:vosk-android:0.3.75@aar")
@@ -94,4 +107,8 @@ dependencies {
     testImplementation("org.json:json:20240303")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    // Screenshot delle schermate (Robolectric con grafica nativa)
+    testImplementation("org.robolectric:robolectric:4.16")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

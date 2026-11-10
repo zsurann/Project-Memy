@@ -1,17 +1,22 @@
 package com.nexa.assistant.speech
 
-/** Ascolta una singola frase e restituisce il testo riconosciuto. */
+/** Ascolta una frase e restituisce il testo. Tutte le callback arrivano sul thread principale. */
 interface SpeechToText {
     interface Listener {
-        fun onPartial(text: String)
+        fun onReady() {}
+        /** Volume della voce, da 0 a 1, per animare la sfera. */
+        fun onLevel(level: Float) {}
+        fun onPartial(text: String) {}
+        /** L'utente ha smesso di parlare e il testo è in trascrizione (motori cloud). */
+        fun onProcessing() {}
         fun onFinal(text: String)
         fun onError(message: String)
     }
 
-    /** true se il motore è pronto all'uso (es. modello vocale già scaricato). */
-    fun isReady(): Boolean
+    val name: String
 
+    fun isReady(): Boolean
     fun start(listener: Listener)
     fun stop()
-    fun release()
+    fun release() = stop()
 }
