@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Nexa</string>
-    <string name="tile_label">Ehi Nexa</string>
+    <string name="app_name">Memy</string>
+    <string name="tile_label">Ehi Memy</string>
+    <string name="accessibility_summary">Permette a Memy di leggere lo schermo e usare le app al posto tuo.</string>
+    <string name="accessibility_description">Quando glielo chiedi, Memy può leggere ciò che appare sullo schermo, toccare pulsanti, scrivere testo e scorrere nelle altre app per completare i tuoi comandi (ad esempio scrivere un messaggio). Memy agisce solo su tua richiesta, chiede conferma prima di inviare, pagare o eliminare, e mostra sempre un indicatore con cui puoi fermarla.</string>
+    <string name="notification_listener_label">Memy — lettura notifiche</string>
 </resources>

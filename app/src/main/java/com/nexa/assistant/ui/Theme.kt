@@ -11,7 +11,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-object NexaColors {
+object MemyColors {
     val Background = Color(0xFF05060D)
     val BackgroundTop = Color(0xFF0A0B1E)
     val Glass = Color(0x14FFFFFF)
@@ -33,7 +33,7 @@ object NexaColors {
 
 private val Sans = FontFamily.SansSerif
 
-private val NexaTypography = Typography(
+private val MemyTypography = Typography(
     displaySmall = TextStyle(fontFamily = Sans, fontWeight = FontWeight.SemiBold, fontSize = 34.sp, lineHeight = 40.sp, letterSpacing = (-0.5).sp),
     headlineSmall = TextStyle(fontFamily = Sans, fontWeight = FontWeight.SemiBold, fontSize = 24.sp, lineHeight = 30.sp, letterSpacing = (-0.3).sp),
     titleMedium = TextStyle(fontFamily = Sans, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, lineHeight = 22.sp),
@@ -44,22 +44,22 @@ private val NexaTypography = Typography(
 )
 
 @Composable
-fun NexaTheme(content: @Composable () -> Unit) {
+fun MemyTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
-            primary = NexaColors.Violet,
+            primary = MemyColors.Violet,
             onPrimary = Color.White,
-            secondary = NexaColors.Cyan,
-            background = NexaColors.Background,
+            secondary = MemyColors.Cyan,
+            background = MemyColors.Background,
             surface = Color(0xFF12142A),
             surfaceVariant = Color(0xFF1C1F3A),
             surfaceContainerHighest = Color(0xFF23264A),
-            onBackground = NexaColors.TextPrimary,
-            onSurface = NexaColors.TextPrimary,
-            onSurfaceVariant = NexaColors.TextSecondary,
-            outline = NexaColors.GlassBorder,
+            onBackground = MemyColors.TextPrimary,
+            onSurface = MemyColors.TextPrimary,
+            onSurfaceVariant = MemyColors.TextSecondary,
+            outline = MemyColors.GlassBorder,
         ),
-        typography = NexaTypography,
+        typography = MemyTypography,
         content = content,
     )
 }

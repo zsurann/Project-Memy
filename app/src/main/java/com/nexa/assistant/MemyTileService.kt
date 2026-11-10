@@ -7,8 +7,8 @@ import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 
-/** Riquadro "Ehi Nexa" nelle Impostazioni rapide: apre Nexa e la mette subito in ascolto. */
-class NexaTileService : TileService() {
+/** Riquadro "Ehi Memy" nelle Impostazioni rapide: apre Memy e la mette subito in ascolto. */
+class MemyTileService : TileService() {
 
     override fun onStartListening() {
         qsTile?.apply {

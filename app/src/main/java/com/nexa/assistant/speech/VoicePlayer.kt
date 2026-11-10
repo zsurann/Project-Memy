@@ -8,8 +8,8 @@ import android.media.MediaPlayer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
-import com.nexa.assistant.data.NexaSettings
-import com.nexa.assistant.data.VoiceEngine
+import com.nexa.assistant.data.MemySettings
+import com.nexa.assistant.data.VoiceModel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -31,29 +31,53 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 
+/** Stato dell'elenco voci mostrato nelle impostazioni. */
+data class VoiceCatalog(
+    val loading: Boolean = false,
+    val voices: List<ElevenVoice> = emptyList(),
+    val usage: ElevenUsage? = null,
+    val error: String? = null,
+)
+
 /**
- * La voce di Nexa. Le frasi arrivano una alla volta (mentre Claude scrive) e vengono lette in ordine.
- * Con le voci cloud la frase successiva viene preparata mentre si sta leggendo quella attuale.
+ * La voce di Memy, con ElevenLabs. Le frasi arrivano una alla volta (mentre Claude scrive) e vengono
+ * lette in ordine; la frase successiva viene preparata mentre si sta leggendo quella attuale.
+ *
+ * Se manca la chiave o ElevenLabs non risponde, per non restare muta usa la sintesi del telefono.
  */
-class VoicePlayer(private val context: Context, private val settings: NexaSettings) {
-
-    enum class SystemStatus { LOADING, READY, NO_ITALIAN, UNAVAILABLE }
-
+class VoicePlayer(
+    private val context: Context,
+    private val settings: MemySettings,
+    private val api: ElevenLabs = ElevenLabs(),
+) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audio = context.getSystemService(AudioManager::class.java)
 
     private val _speaking = MutableStateFlow(false)
     val speaking: StateFlow<Boolean> = _speaking.asStateFlow()
-    private val _systemStatus = MutableStateFlow(SystemStatus.LOADING)
-    val systemStatus: StateFlow<SystemStatus> = _systemStatus.asStateFlow()
 
-    /** Notifica (una volta) quando la voce cloud fallisce e si passa a quella del telefono. */
+    private val _catalog = MutableStateFlow(VoiceCatalog())
+    val catalog: StateFlow<VoiceCatalog> = _catalog.asStateFlow()
+
+    /** Solo per gli screenshot di prova. */
+    @androidx.annotation.VisibleForTesting
+    internal fun setPreviewCatalog(catalog: VoiceCatalog, previewingId: String?) {
+        _catalog.value = catalog
+        _previewing.value = previewingId
+    }
+
+    /** ID della voce di cui si sta ascoltando l'anteprima (per animare il pulsante). */
+    private val _previewing = MutableStateFlow<String?>(null)
+    val previewing: StateFlow<String?> = _previewing.asStateFlow()
+
+    /** Avviso (al massimo uno al minuto) quando ElevenLabs fallisce e si usa la voce del telefono. */
     var onFallback: ((String) -> Unit)? = null
 
     private sealed interface Item {
         val gen: Int
-        data class Cloud(override val gen: Int, val text: String, val audio: Deferred<Result<File>>) : Item
-        data class System(override val gen: Int, val text: String) : Item
+        val text: String
+        data class Cloud(override val gen: Int, override val text: String, val audio: Deferred<Result<File>>) : Item
+        data class Local(override val gen: Int, override val text: String) : Item
     }
 
     private val incoming = Channel<Pair<Int, String>>(Channel.UNLIMITED)
@@ -63,42 +87,99 @@ class VoicePlayer(private val context: Context, private val settings: NexaSettin
     @Volatile private var generation = 0
     private var player: MediaPlayer? = null
     private var interruptPlayback: (() -> Unit)? = null
+    private var previewPlayer: MediaPlayer? = null
     private var focus: AudioFocusRequest? = null
     private var lastFallbackNotice = 0L
 
     private var tts: TextToSpeech? = null
-    private val ttsReady = CompletableDeferred<Unit>()
+    private val ttsReady = CompletableDeferred<Boolean>()
 
     init {
         tts = TextToSpeech(context.applicationContext) { code ->
             val engine = tts
-            if (code != TextToSpeech.SUCCESS || engine == null) {
-                _systemStatus.value = SystemStatus.UNAVAILABLE
-            } else {
+            val ok = code == TextToSpeech.SUCCESS && engine != null && run {
                 val res = engine.setLanguage(Locale.ITALIAN)
-                if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    _systemStatus.value = SystemStatus.NO_ITALIAN
-                } else {
+                if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) false
+                else {
                     bestItalianVoice(engine)?.let { engine.voice = it }
-                    _systemStatus.value = SystemStatus.READY
+                    true
                 }
             }
-            ttsReady.complete(Unit)
+            ttsReady.complete(ok)
         }
         scope.launch { prepareLoop() }
         scope.launch { playLoop() }
     }
 
-    /** Sceglie la voce italiana di qualità più alta installata (le voci "rete" di Google sono neurali). */
     private fun bestItalianVoice(engine: TextToSpeech): Voice? = runCatching {
         engine.voices.orEmpty()
             .filter { it.locale.language == "it" && !it.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) }
             .maxWithOrNull(compareBy<Voice> { it.quality }.thenBy { if (it.locale.country == "IT") 1 else 0 })
     }.getOrNull()
 
+    // ------------------------------------------------------------------ elenco voci
+
+    /** Scarica l'elenco delle voci e i crediti residui. Se non c'è una voce scelta, seleziona la prima gratuita. */
+    fun refreshCatalog() {
+        val key = settings.elevenKey()
+        if (key.isNullOrBlank()) {
+            _catalog.value = VoiceCatalog()
+            return
+        }
+        if (_catalog.value.loading) return
+        _catalog.update { it.copy(loading = true, error = null) }
+        scope.launch {
+            val voices = withContext(Dispatchers.IO) { runCatching { api.voices(key) } }
+            val usage = withContext(Dispatchers.IO) { runCatching { api.usage(key) }.getOrNull() }
+            voices.fold(
+                onSuccess = { list ->
+                    val sorted = list.sortedWith(compareBy<ElevenVoice> { !it.isFree }.thenBy { it.name })
+                    _catalog.value = VoiceCatalog(voices = sorted, usage = usage)
+                    val current = settings.state.value.voiceId
+                    if (sorted.isNotEmpty() && sorted.none { it.id == current }) {
+                        val first = sorted.first()
+                        settings.setVoice(first.id, first.name)
+                    }
+                },
+                onFailure = { e ->
+                    _catalog.update { it.copy(loading = false, usage = usage, error = "Non riesco a scaricare le voci: ${e.message}") }
+                },
+            )
+        }
+    }
+
+    /** Riproduce (o ferma) l'anteprima gratuita di una voce: non consuma crediti. */
+    fun togglePreview(voice: ElevenVoice) {
+        val wasPlaying = _previewing.value == voice.id
+        stopPreview()
+        if (wasPlaying) return
+        val url = voice.previewUrl ?: return
+        stop()
+        val mp = MediaPlayer()
+        previewPlayer = mp
+        _previewing.value = voice.id
+        runCatching {
+            mp.setAudioAttributes(attributes)
+            mp.setDataSource(url)
+            mp.setOnPreparedListener { if (previewPlayer === mp) it.start() }
+            mp.setOnCompletionListener { if (previewPlayer === mp) stopPreview() }
+            mp.setOnErrorListener { _, _, _ -> if (previewPlayer === mp) stopPreview(); true }
+            mp.prepareAsync()
+        }.onFailure { stopPreview() }
+    }
+
+    fun stopPreview() {
+        previewPlayer?.runCatching { release() }
+        previewPlayer = null
+        _previewing.value = null
+    }
+
+    // ------------------------------------------------------------------ parlare
+
     fun enqueue(text: String) {
         val clean = cleanForSpeech(text)
         if (clean.isBlank()) return
+        if (_previewing.value != null) scope.launch { stopPreview() }
         pending.update { it + 1 }
         incoming.trySend(generation to clean)
     }
@@ -127,21 +208,20 @@ class VoicePlayer(private val context: Context, private val settings: NexaSettin
         for ((gen, text) in incoming) {
             if (gen != generation) continue
             val s = settings.state.value
-            val synth: ((String) -> ByteArray)? = when (s.voiceEngine) {
-                VoiceEngine.GOOGLE_CLOUD -> settings.googleKey()?.let { k -> { t -> CloudVoices.google(t, k, s.googleVoice, s.speechRate) } }
-                VoiceEngine.OPENAI -> settings.openAiKey()?.let { k -> { t -> CloudVoices.openAi(t, k, s.openAiVoice, s.speechRate) } }
-                VoiceEngine.ELEVENLABS -> settings.elevenKey()?.let { k -> { t -> CloudVoices.elevenLabs(t, k, s.elevenVoiceId, s.speechRate) } }
-                VoiceEngine.SYSTEM -> null
-            }
-            val item = if (synth == null) Item.System(gen, text) else {
-                val job = scope.async(Dispatchers.IO) {
+            val key = settings.elevenKey()
+            val item = if (key.isNullOrBlank() || s.voiceId.isBlank()) Item.Local(gen, text) else {
+                Item.Cloud(gen, text, scope.async(Dispatchers.IO) {
                     runCatching {
-                        val file = File(context.cacheDir, "voce-${counter.incrementAndGet()}.mp3")
-                        file.writeBytes(synth(text))
-                        file
+                        val bytes = try {
+                            api.speak(text, key, s.voiceId, s.voiceModel, s.speechRate)
+                        } catch (e: ElevenLabsException) {
+                            // Un modello non incluso nel piano: riprova con quello base prima di arrendersi.
+                            if (s.voiceModel == VoiceModel.FLASH || e.code == 401 || e.code == 429) throw e
+                            api.speak(text, key, s.voiceId, VoiceModel.FLASH, s.speechRate)
+                        }
+                        File(context.cacheDir, "voce-${counter.incrementAndGet()}.mp3").apply { writeBytes(bytes) }
                     }
-                }
-                Item.Cloud(gen, text, job)
+                })
             }
             prepared.send(item)
         }
@@ -150,20 +230,26 @@ class VoicePlayer(private val context: Context, private val settings: NexaSettin
     private suspend fun playLoop() {
         for (item in prepared) {
             try {
-                if (item.gen != generation) continue
+                if (item.gen != generation) {
+                    (item as? Item.Cloud)?.audio?.let { d -> scope.launch { d.await().getOrNull()?.delete() } }
+                    continue
+                }
                 setSpeaking(true)
                 when (item) {
-                    is Item.System -> playSystem(item.text)
+                    is Item.Local -> playSystem(item.text)
                     is Item.Cloud -> {
                         val result = item.audio.await()
-                        if (item.gen != generation) continue
+                        if (item.gen != generation) {
+                            result.getOrNull()?.delete()
+                            continue
+                        }
                         result.fold(
                             onSuccess = { file -> playFile(file); file.delete() },
                             onFailure = { e ->
                                 val now = System.currentTimeMillis()
                                 if (now - lastFallbackNotice > 60_000) {
                                     lastFallbackNotice = now
-                                    onFallback?.invoke("Voce cloud non disponibile (${e.message}). Uso la voce del telefono.")
+                                    onFallback?.invoke("Voce ElevenLabs non disponibile: ${e.message}. Uso la voce del telefono.")
                                 }
                                 playSystem(item.text)
                             },
@@ -172,7 +258,7 @@ class VoicePlayer(private val context: Context, private val settings: NexaSettin
                 }
             } finally {
                 if (item.gen == generation) {
-                    pending.value = (pending.value - 1).coerceAtLeast(0)
+                    pending.update { (it - 1).coerceAtLeast(0) }
                     if (pending.value == 0) setSpeaking(false)
                 }
             }
@@ -193,6 +279,8 @@ class VoicePlayer(private val context: Context, private val settings: NexaSettin
                 interruptPlayback = { if (cont.isActive) cont.resume(Unit) }
                 mp.prepareAsync()
             }
+        } catch (e: java.io.IOException) {
+            // file audio non leggibile: si passa alla frase successiva
         } finally {
             interruptPlayback = null
             runCatching { mp.release() }
@@ -201,24 +289,23 @@ class VoicePlayer(private val context: Context, private val settings: NexaSettin
     }
 
     private suspend fun playSystem(text: String) {
-        ttsReady.await()
+        if (!ttsReady.await()) return
         val engine = tts ?: return
-        if (_systemStatus.value == SystemStatus.UNAVAILABLE) return
         engine.setSpeechRate(settings.state.value.speechRate)
         val id = UUID.randomUUID().toString()
-        withContext(Dispatchers.Main) {
-            suspendCancellableCoroutine { cont ->
-                engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {}
-                    override fun onDone(utteranceId: String?) { if (utteranceId == id && cont.isActive) cont.resume(Unit) }
-                    @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) { if (utteranceId == id && cont.isActive) cont.resume(Unit) }
-                    override fun onStop(utteranceId: String?, interrupted: Boolean) { if (utteranceId == id && cont.isActive) cont.resume(Unit) }
-                })
-                cont.invokeOnCancellation { engine.stop() }
-                if (engine.speak(text, TextToSpeech.QUEUE_ADD, null, id) != TextToSpeech.SUCCESS && cont.isActive) cont.resume(Unit)
-            }
+        suspendCancellableCoroutine { cont ->
+            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+                override fun onDone(utteranceId: String?) { if (utteranceId == id && cont.isActive) cont.resume(Unit) }
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) { if (utteranceId == id && cont.isActive) cont.resume(Unit) }
+                override fun onStop(utteranceId: String?, interrupted: Boolean) { if (utteranceId == id && cont.isActive) cont.resume(Unit) }
+            })
+            cont.invokeOnCancellation { engine.stop() }
+            interruptPlayback = { if (cont.isActive) cont.resume(Unit) }
+            if (engine.speak(text, TextToSpeech.QUEUE_ADD, null, id) != TextToSpeech.SUCCESS && cont.isActive) cont.resume(Unit)
         }
+        interruptPlayback = null
     }
 
     private val attributes = AudioAttributes.Builder()
@@ -229,7 +316,7 @@ class VoicePlayer(private val context: Context, private val settings: NexaSettin
     private fun setSpeaking(value: Boolean) {
         if (_speaking.value == value) return
         _speaking.value = value
-        // Abbassa la musica mentre Nexa parla.
+        // Abbassa la musica mentre Memy parla.
         if (value) {
             focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                 .setAudioAttributes(attributes).build().also { audio.requestAudioFocus(it) }
@@ -237,12 +324,6 @@ class VoicePlayer(private val context: Context, private val settings: NexaSettin
             focus?.let { audio.abandonAudioFocusRequest(it) }
             focus = null
         }
-    }
-
-    fun shutdown() {
-        stop()
-        tts?.shutdown()
-        tts = null
     }
 
     companion object {

@@ -1,8 +1,22 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#00000000" android:strokeColor="#7C9CFF" android:strokeWidth="3"
-        android:pathData="M54,24a30,30 0,1 1,0 60a30,30 0,1 1,0 -60z" />
-    <path android:fillColor="#FFFFFF"
-        android:pathData="M40,72V36h6l16,23V36h6v36h-6L46,49v23z" />
+    <!-- Sfera sfumata -->
+    <path android:pathData="M54,54m-27,0a27,27 0,1 1,54 0a27,27 0,1 1,-54 0">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="30" android:startY="28" android:endX="80" android:endY="82">
+                <item android:offset="0" android:color="#FF8B5CF6" />
+                <item android:offset="0.55" android:color="#FF6366F1" />
+                <item android:offset="1" android:color="#FF22D3EE" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Riflesso -->
+    <path android:fillColor="#33FFFFFF"
+        android:pathData="M45,43m-11,0a11,11 0,1 1,22 0a11,11 0,1 1,-22 0" />
+    <!-- Lettera M -->
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="5.2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M42,65V45l12,13l12,-13v20" />
 </vector>

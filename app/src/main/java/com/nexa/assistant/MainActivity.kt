@@ -21,14 +21,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
 import com.nexa.assistant.ui.HomeScreen
-import com.nexa.assistant.ui.NexaTheme
+import com.nexa.assistant.ui.MemyTheme
 import com.nexa.assistant.ui.SettingsScreen
 import com.nexa.assistant.update.UpdateManager
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
-    private val app get() = application as NexaApp
+    private val app get() = application as MemyApp
     private var listenWhenGranted = false
 
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
         setContent {
-            NexaTheme {
+            MemyTheme {
                 var showSettings by rememberSaveable { mutableStateOf(!app.settings.state.value.hasApiKey) }
                 AnimatedContent(
                     targetState = showSettings,

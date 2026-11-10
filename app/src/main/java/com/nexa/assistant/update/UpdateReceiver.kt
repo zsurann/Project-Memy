@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.os.Build
-import com.nexa.assistant.NexaApp
+import com.nexa.assistant.MemyApp
 
 /** Riceve l'esito dell'installazione dell'aggiornamento. */
 class UpdateReceiver : BroadcastReceiver() {
@@ -23,7 +23,7 @@ class UpdateReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_SUCCESS -> Unit // l'app viene riavviata dal sistema
             else -> {
                 val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "errore sconosciuto"
-                (context.applicationContext as? NexaApp)?.updates?.reportFailure("Aggiornamento non installato: $msg")
+                (context.applicationContext as? MemyApp)?.updates?.reportFailure("Aggiornamento non installato: $msg")
             }
         }
     }

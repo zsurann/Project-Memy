@@ -3,15 +3,21 @@ package com.nexa.assistant
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
-import com.nexa.assistant.agent.NexaAgent
+import com.nexa.assistant.access.MemyAccessibilityService
+import com.nexa.assistant.agent.MemyAgent
 import com.nexa.assistant.data.SttEngine
 import com.nexa.assistant.speech.CloudSpeechToText
+import com.nexa.assistant.speech.ElevenLabs
 import com.nexa.assistant.speech.SpeechToText
 import com.nexa.assistant.speech.SystemSpeechToText
 import com.nexa.assistant.speech.VoicePlayer
 import com.nexa.assistant.speech.VoskModelManager
 import com.nexa.assistant.speech.VoskSpeechToText
-import com.nexa.assistant.tools.phoneTools
+import com.nexa.assistant.tools.basicTools
+import com.nexa.assistant.tools.dataTools
+import com.nexa.assistant.tools.notificationTools
+import com.nexa.assistant.tools.screenTools
+import com.nexa.assistant.tools.systemTools
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +34,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.Normalizer
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.abs
+import kotlin.math.sin
 
 enum class Phase { IDLE, LISTENING, PROCESSING, THINKING, SPEAKING, CONFIRMING }
 
@@ -36,36 +44,38 @@ data class ChatLine(
     val fromUser: Boolean,
     val text: String,
     val isNotice: Boolean = false,
+    /** La risposta è ancora in arrivo. */
     val streaming: Boolean = false,
+    /** Strumento in uso mentre la risposta è in arrivo (es. "set_alarm"). */
+    val tool: String? = null,
 )
 
 data class UiState(
     val phase: Phase = Phase.IDLE,
     val partial: String = "",
     val lines: List<ChatLine> = emptyList(),
-    val toolInUse: String? = null,
     val pendingConfirmation: String? = null,
     val modelDownloadProgress: Float? = null,
     val voiceModelInstalled: Boolean = false,
     val listenerName: String = "",
 )
 
-/** Coordina voce → Claude → azioni → voce. Vive a livello di app (vedi [NexaApp]). */
-class NexaController(private val app: NexaApp) {
+/** Coordina voce → Claude → azioni → voce. Vive a livello di app (vedi [MemyApp]). */
+class MemyController(private val app: MemyApp) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val settings get() = app.settings
     private val ids = AtomicLong()
+    private val eleven = ElevenLabs()
 
     private val voskModels = VoskModelManager(app)
     private val vosk = VoskSpeechToText(voskModels)
     val googleDevice = SystemSpeechToText(app, googleOnly = true)
     private val anySystem = SystemSpeechToText(app, googleOnly = false)
-    private val googleCloud = CloudSpeechToText.googleCloud { settings.googleKey() }
-    private val openAi = CloudSpeechToText.openAi { settings.openAiKey() }
+    private val scribe = CloudSpeechToText("ElevenLabs Scribe", { settings.elevenKey() }) { wav, key -> eleven.transcribe(wav, key) }
     private var activeStt: SpeechToText? = null
 
-    val voice = VoicePlayer(app, settings).also { v ->
+    val voice = VoicePlayer(app, settings, eleven).also { v ->
         v.onFallback = { msg -> scope.launch { notice(msg) } }
     }
 
@@ -78,45 +88,52 @@ class NexaController(private val app: NexaApp) {
 
     /** L'app è visibile? Il microfono si può usare solo in primo piano. */
     var inForeground = false
+        set(value) {
+            field = value
+            updateOverlay()
+        }
 
     private var job: Job? = null
+    /** Claude sta ancora lavorando (a differenza di [job], che resta attivo finché Memy finisce di parlare). */
+    private var agentBusy = false
     private var confirmation: CompletableDeferred<Boolean>? = null
 
-    private val agent = NexaAgent(phoneTools(app), object : NexaAgent.Hooks {
-        override suspend fun confirm(prompt: String): Boolean =
-            withContext(Dispatchers.Main) { askConfirmation(prompt) }
+    private val agent = MemyAgent(
+        basicTools(app) + screenTools() + notificationTools() + dataTools(app, app.memory, app.reminders) + systemTools(app),
+        object : MemyAgent.Hooks {
+            override suspend fun confirm(prompt: String): Boolean =
+                withContext(Dispatchers.Main) { askConfirmation(prompt) }
 
-        override fun onToolUse(toolName: String) {
-            _state.update { it.copy(toolInUse = toolName) }
-        }
-
-        override fun onSentence(sentence: String) {
-            voice.enqueue(sentence)
-            _state.update { if (it.phase == Phase.THINKING) it.copy(phase = Phase.SPEAKING) else it }
-        }
-
-        override fun onText(textSoFar: String) {
-            _state.update { s ->
-                val last = s.lines.lastOrNull()
-                if (last != null && last.streaming) s.copy(lines = s.lines.dropLast(1) + last.copy(text = textSoFar)) else s
+            override fun onToolUse(toolName: String) {
+                updateStreamingLine { it.copy(tool = toolName) }
+                scope.launch { updateOverlay() }
             }
-        }
-    })
+
+            override fun onSentence(sentence: String) {
+                voice.enqueue(sentence)
+                _state.update { if (it.phase == Phase.THINKING) it.copy(phase = Phase.SPEAKING) else it }
+            }
+
+            override fun onText(textSoFar: String) = updateStreamingLine { it.copy(text = textSoFar, tool = null) }
+        },
+    )
 
     init {
-        // Animazione della sfera mentre Nexa parla.
+        // Animazione della sfera mentre Memy parla.
         scope.launch {
             var t = 0f
             while (isActive) {
-                if (voice.speaking.value && _state.value.phase != Phase.LISTENING) {
+                val phase = _state.value.phase
+                if (voice.speaking.value && phase != Phase.LISTENING) {
                     t += 0.18f
-                    _level.value = 0.35f + 0.3f * kotlin.math.abs(kotlin.math.sin(t)) + 0.15f * kotlin.math.abs(kotlin.math.sin(t * 2.3f))
-                } else if (_state.value.phase != Phase.LISTENING) {
-                    _level.value = (_level.value * 0.85f)
+                    _level.value = 0.35f + 0.3f * abs(sin(t)) + 0.15f * abs(sin(t * 2.3f))
+                } else if (phase != Phase.LISTENING && _level.value > 0.005f) {
+                    _level.value *= 0.85f
                 }
                 delay(50)
             }
         }
+        voice.refreshCatalog()
     }
 
     fun hasMicPermission() =
@@ -124,10 +141,10 @@ class NexaController(private val app: NexaApp) {
 
     /** Sceglie il motore di ascolto in base alle impostazioni e a cosa è disponibile. */
     fun resolveStt(): SpeechToText? = when (settings.state.value.sttEngine) {
-        SttEngine.AUTO -> listOf(googleDevice, googleCloud, openAi, vosk, anySystem).firstOrNull { it.isReady() }
+        // In automatico si preferiscono i motori gratuiti; Scribe solo se non c'è altro.
+        SttEngine.AUTO -> listOf(googleDevice, vosk, scribe, anySystem).firstOrNull { it.isReady() }
         SttEngine.GOOGLE_DEVICE -> googleDevice.takeIf { it.isReady() }
-        SttEngine.GOOGLE_CLOUD -> googleCloud.takeIf { it.isReady() }
-        SttEngine.OPENAI -> openAi.takeIf { it.isReady() }
+        SttEngine.ELEVENLABS -> scribe.takeIf { it.isReady() }
         SttEngine.VOSK -> vosk.takeIf { it.isReady() }
     }
 
@@ -139,7 +156,7 @@ class NexaController(private val app: NexaApp) {
             Phase.IDLE -> startListening()
             Phase.SPEAKING -> {
                 job?.cancel(); voice.stop(); finishStreamingLine()
-                _state.update { it.copy(phase = Phase.IDLE, toolInUse = null) }
+                _state.update { it.copy(phase = Phase.IDLE) }
                 startListening()
             }
             Phase.CONFIRMING -> Unit
@@ -150,6 +167,7 @@ class NexaController(private val app: NexaApp) {
     fun startListening() {
         val stt = readyOrExplain() ?: return
         voice.stop()
+        voice.stopPreview()
         stopStt()
         activeStt = stt
         _state.update { it.copy(phase = Phase.LISTENING, partial = "", listenerName = stt.name) }
@@ -196,9 +214,8 @@ class NexaController(private val app: NexaApp) {
             notice(
                 when (settings.state.value.sttEngine) {
                     SttEngine.GOOGLE_DEVICE -> "Il riconoscimento di Google non è disponibile su questo telefono. Scegli un altro motore nelle impostazioni."
-                    SttEngine.GOOGLE_CLOUD -> "Inserisci la chiave Google Cloud nelle impostazioni."
-                    SttEngine.OPENAI -> "Inserisci la chiave OpenAI nelle impostazioni."
-                    else -> "Configura il riconoscimento vocale nelle impostazioni (ad esempio scarica la voce offline)."
+                    SttEngine.ELEVENLABS -> "Inserisci la chiave ElevenLabs nelle impostazioni per usare Scribe."
+                    else -> "Configura l'ascolto nelle impostazioni: scarica il modello offline oppure aggiungi la chiave ElevenLabs."
                 }
             )
             null
@@ -216,42 +233,62 @@ class NexaController(private val app: NexaApp) {
             notice("Inserisci prima la tua chiave API di Claude nelle impostazioni."); return
         }
         job?.cancel()
+        confirmation?.complete(false)
+        stopStt()
         voice.stop()
+        finishStreamingLine()
         addLine(ChatLine(ids.incrementAndGet(), fromUser = true, text = clean))
         addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = "", streaming = true))
         job = scope.launch {
-            _state.update { it.copy(phase = Phase.THINKING, toolInUse = null) }
+            agentBusy = true
+            _state.update { it.copy(phase = Phase.THINKING, partial = "") }
             val s = settings.state.value
             val reply = try {
-                agent.run(clean, NexaAgent.Options(key, s.model, s.userName, s.webSearch))
-            } catch (e: NexaAgent.AgentException) {
+                agent.run(clean, MemyAgent.Options(key, s.model, s.userName, s.webSearch, app.memory.items.value))
+            } catch (e: MemyAgent.AgentException) {
                 (e.message ?: "Si è verificato un errore.").also { voice.enqueue(it) }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                finishStreamingLine(); throw e
+                agentBusy = false; finishStreamingLine(); updateOverlay(); throw e
             } catch (e: Exception) {
                 "Si è verificato un errore imprevisto: ${e.message}".also { voice.enqueue(it) }
             }
             replaceStreamingLine(reply)
-            _state.update { it.copy(toolInUse = null, phase = if (voice.speaking.value) Phase.SPEAKING else it.phase) }
+            _state.update { it.copy(phase = if (voice.speaking.value) Phase.SPEAKING else it.phase) }
+            agentBusy = false
+            updateOverlay()
             voice.awaitIdle()
             _state.update { it.copy(phase = Phase.IDLE) }
             if (settings.state.value.continuousConversation && inForeground) startListening()
         }
+        updateOverlay()
     }
 
+    private inline fun editStreaming(s: UiState, change: (ChatLine) -> ChatLine?): UiState? {
+        val i = s.lines.indexOfLast { it.streaming }
+        if (i < 0) return null
+        val lines = s.lines.toMutableList()
+        val updated = change(lines[i])
+        if (updated == null) lines.removeAt(i) else lines[i] = updated
+        return s.copy(lines = lines)
+    }
+
+    private fun updateStreamingLine(change: (ChatLine) -> ChatLine) =
+        _state.update { s -> editStreaming(s, change) ?: s }
+
     private fun replaceStreamingLine(text: String) = _state.update { s ->
-        val last = s.lines.lastOrNull()
-        if (last != null && last.streaming) s.copy(lines = s.lines.dropLast(1) + last.copy(text = text, streaming = false))
-        else s.copy(lines = s.lines + ChatLine(ids.incrementAndGet(), false, text))
+        editStreaming(s) { it.copy(text = text, streaming = false, tool = null) }
+            ?: s.copy(lines = s.lines + ChatLine(ids.incrementAndGet(), false, text))
     }
 
     private fun finishStreamingLine() = _state.update { s ->
-        val last = s.lines.lastOrNull()
-        when {
-            last == null || !last.streaming -> s
-            last.text.isBlank() -> s.copy(lines = s.lines.dropLast(1))
-            else -> s.copy(lines = s.lines.dropLast(1) + last.copy(streaming = false))
-        }
+        editStreaming(s) { if (it.text.isBlank()) null else it.copy(streaming = false, tool = null) } ?: s
+    }
+
+    /** Mentre Memy lavora in un'altra app mostra un indicatore con cui fermarla. */
+    private fun updateOverlay() {
+        val svc = MemyAccessibilityService.instance ?: return
+        if (agentBusy && !inForeground) svc.showStatus("✦ Memy al lavoro · tocca per fermare") { stopAll() }
+        else svc.hideStatus()
     }
 
     // ------------------------------------------------------------------ conferme
@@ -261,24 +298,33 @@ class NexaController(private val app: NexaApp) {
         confirmation = deferred
         voice.awaitIdle()
         _state.update { it.copy(phase = Phase.CONFIRMING, pendingConfirmation = prompt) }
-        voice.speakNow(prompt)
 
-        // Dopo aver parlato, ascolta un "sì" o un "no" (i pulsanti funzionano comunque).
-        val stt = resolveStt()
-        if (!deferred.isCompleted && hasMicPermission() && stt != null) {
-            activeStt = stt
-            stt.start(object : SpeechToText.Listener {
-                override fun onLevel(level: Float) { _level.value = level }
-                override fun onPartial(text: String) { _state.update { it.copy(partial = text) } }
-                override fun onFinal(text: String) {
-                    _state.update { it.copy(partial = "") }
-                    parseYesNo(text)?.let { deferred.complete(it) }
-                }
-                override fun onError(message: String) {}
-            })
+        val svc = MemyAccessibilityService.instance
+        val answer = if (!inForeground && svc != null) {
+            // Memy sta lavorando in un'altra app: la domanda compare sopra quell'app, con i pulsanti.
+            voice.enqueue(prompt)
+            withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { svc.confirm(prompt, deferred) } ?: false
+        } else {
+            voice.speakNow(prompt)
+            // Dopo aver parlato, ascolta un "sì" o un "no" (i pulsanti funzionano comunque).
+            val stt = resolveStt()
+            if (!deferred.isCompleted && inForeground && hasMicPermission() && stt != null) {
+                activeStt = stt
+                stt.start(object : SpeechToText.Listener {
+                    override fun onLevel(level: Float) { _level.value = level }
+                    override fun onPartial(text: String) { _state.update { it.copy(partial = text) } }
+                    override fun onFinal(text: String) {
+                        _state.update { it.copy(partial = "") }
+                        parseYesNo(text)?.let { deferred.complete(it) }
+                    }
+                    override fun onError(message: String) {}
+                })
+            }
+            withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { deferred.await() } ?: false
         }
-        val answer = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { deferred.await() } ?: false
+        deferred.complete(answer)
         stopStt()
+        voice.stop()
         confirmation = null
         _state.update { it.copy(phase = Phase.THINKING, pendingConfirmation = null, partial = "") }
         return answer
@@ -292,7 +338,7 @@ class NexaController(private val app: NexaApp) {
     private fun parseYesNo(text: String): Boolean? {
         val t = Normalizer.normalize(text.lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{M}"), "")
         val words = t.split(Regex("[^a-z]+")).filter { it.isNotEmpty() }.toSet()
-        val no = setOf("no", "annulla", "stop", "aspetta", "fermo", "lascia", "niente", "negativo")
+        val no = setOf("no", "annulla", "stop", "aspetta", "fermo", "ferma", "lascia", "niente", "negativo")
         val yes = setOf("si", "certo", "conferma", "confermo", "ok", "okay", "vai", "procedi", "esatto", "invia", "chiama", "sicuro", "giusto", "perfetto")
         return when {
             words.any { it in no } -> false
@@ -305,11 +351,14 @@ class NexaController(private val app: NexaApp) {
 
     fun stopAll() {
         job?.cancel()
+        job = null
+        agentBusy = false
         confirmation?.complete(false)
         stopStt()
         voice.stop()
         finishStreamingLine()
-        _state.update { it.copy(phase = Phase.IDLE, partial = "", toolInUse = null, pendingConfirmation = null) }
+        _state.update { it.copy(phase = Phase.IDLE, partial = "", pendingConfirmation = null) }
+        updateOverlay()
     }
 
     fun newConversation() {
@@ -324,7 +373,6 @@ class NexaController(private val app: NexaApp) {
             _state.update { it.copy(modelDownloadProgress = 0f) }
             try {
                 voskModels.download { p -> _state.update { it.copy(modelDownloadProgress = p) } }
-                notice("Riconoscimento offline italiano installato.")
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -334,10 +382,11 @@ class NexaController(private val app: NexaApp) {
         }
     }
 
+    /** Fa dire a Memy una frase di prova con la voce scelta (consuma qualche credito ElevenLabs). */
     fun testVoice() {
         voice.stop()
         val name = settings.state.value.userName
-        voice.enqueue("Ciao${if (name.isNotBlank()) " $name" else ""}, sono Nexa. È così che suona la mia voce: ti piace?")
+        voice.enqueue("Ciao${if (name.isNotBlank()) " $name" else ""}, sono Memy. È così che suona la mia voce: ti piace?")
     }
 
     private fun notice(text: String) = addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = text, isNotice = true))
@@ -354,7 +403,7 @@ class NexaController(private val app: NexaApp) {
     }
 
     private companion object {
-        const val CONFIRM_TIMEOUT_MS = 30_000L
+        const val CONFIRM_TIMEOUT_MS = 45_000L
         const val MAX_LINES = 200
     }
 }

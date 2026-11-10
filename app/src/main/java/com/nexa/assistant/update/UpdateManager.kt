@@ -8,7 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import com.nexa.assistant.BuildConfig
-import com.nexa.assistant.data.NexaSettings
+import com.nexa.assistant.data.MemySettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit
  * Aggiornamenti automatici da GitHub: legge `version.json` dalla release "ultima-versione",
  * scarica il nuovo APK e lo installa con il PackageInstaller di Android.
  */
-class UpdateManager(private val context: Context, private val settings: NexaSettings) {
+class UpdateManager(private val context: Context, private val settings: MemySettings) {
 
     data class Release(val versionCode: Long, val versionName: String, val notes: String, val apkUrl: String)
 
@@ -60,28 +60,32 @@ class UpdateManager(private val context: Context, private val settings: NexaSett
 
     suspend fun check(): Release? = withContext(Dispatchers.IO) {
         _state.value = State.Checking
-        try {
-            val req = Request.Builder().url("${BuildConfig.UPDATE_BASE_URL}/version.json?t=${System.currentTimeMillis()}").build()
-            val json = http.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) error("HTTP ${resp.code}")
-                JSONObject(resp.body!!.string())
+        var lastError = "nessuna risposta"
+        for (base in BuildConfig.UPDATE_BASE_URLS.split(',')) {
+            try {
+                val req = Request.Builder().url("$base/version.json?t=${System.currentTimeMillis()}").build()
+                val json = http.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) error("HTTP ${resp.code}")
+                    JSONObject(resp.body!!.string())
+                }
+                settings.lastUpdateCheck = System.currentTimeMillis()
+                val rel = Release(
+                    versionCode = json.getLong("versionCode"),
+                    versionName = json.optString("versionName"),
+                    notes = json.optString("notes"),
+                    apkUrl = json.optString("apkUrl").ifBlank { "$base/Memy.apk" },
+                )
+                return@withContext if (rel.versionCode > currentVersionCode) {
+                    _state.value = State.Available(rel); rel
+                } else {
+                    _state.value = State.UpToDate; null
+                }
+            } catch (e: Exception) {
+                lastError = e.message ?: lastError
             }
-            settings.lastUpdateCheck = System.currentTimeMillis()
-            val rel = Release(
-                versionCode = json.getLong("versionCode"),
-                versionName = json.optString("versionName"),
-                notes = json.optString("notes"),
-                apkUrl = json.optString("apkUrl").ifBlank { "${BuildConfig.UPDATE_BASE_URL}/Nexa.apk" },
-            )
-            if (rel.versionCode > currentVersionCode) {
-                _state.value = State.Available(rel); rel
-            } else {
-                _state.value = State.UpToDate; null
-            }
-        } catch (e: Exception) {
-            _state.value = State.Failed("Controllo aggiornamenti non riuscito: ${e.message}")
-            null
         }
+        _state.value = State.Failed("Controllo aggiornamenti non riuscito: $lastError")
+        null
     }
 
     suspend fun downloadAndInstall(rel: Release) {
@@ -109,7 +113,7 @@ class UpdateManager(private val context: Context, private val settings: NexaSett
 
     private fun download(rel: Release): File {
         val dir = File(context.cacheDir, "updates").apply { deleteRecursively(); mkdirs() }
-        val file = File(dir, "Nexa-${rel.versionCode}.apk")
+        val file = File(dir, "Memy-${rel.versionCode}.apk")
         http.newCall(Request.Builder().url(rel.apkUrl).build()).execute().use { resp ->
             if (!resp.isSuccessful) error("HTTP ${resp.code}")
             val body = resp.body!!
@@ -135,7 +139,7 @@ class UpdateManager(private val context: Context, private val settings: NexaSett
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(context.packageName)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                // Dopo il primo aggiornamento fatto da Nexa stessa, i successivi non chiedono più conferma.
+                // Dopo il primo aggiornamento fatto da Memy stessa, i successivi non chiedono più conferma.
                 setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -144,7 +148,7 @@ class UpdateManager(private val context: Context, private val settings: NexaSett
         }
         val sessionId = installer.createSession(params)
         installer.openSession(sessionId).use { session ->
-            session.openWrite("nexa.apk", 0, apk.length()).use { out ->
+            session.openWrite("memy.apk", 0, apk.length()).use { out ->
                 apk.inputStream().use { it.copyTo(out) }
                 session.fsync(out)
             }

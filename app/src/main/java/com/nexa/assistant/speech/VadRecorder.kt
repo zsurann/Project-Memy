@@ -74,6 +74,8 @@ class VadRecorder(
                     noiseFloor += rms / CALIBRATION_FRAMES
                     calibrationFrames++
                     preRoll.addLast(frame.copyOf(n))
+                    // Se l'utente parla subito, la calibrazione misurerebbe la voce invece del rumore: mettiamo un tetto.
+                    if (calibrationFrames == CALIBRATION_FRAMES) noiseFloor = noiseFloor.coerceAtMost(MAX_NOISE_FLOOR)
                     continue
                 }
                 val threshold = maxOf(noiseFloor * 2.8f, MIN_THRESHOLD)
@@ -83,7 +85,7 @@ class VadRecorder(
                     preRoll.addLast(frame.copyOf(n))
                     if (preRoll.size > PRE_ROLL_FRAMES) preRoll.removeFirst()
                     // Lentamente adatta la soglia al rumore di fondo.
-                    if (!loud) noiseFloor = noiseFloor * 0.97f + rms * 0.03f
+                    if (!loud) noiseFloor = (noiseFloor * 0.97f + rms * 0.03f).coerceAtMost(MAX_NOISE_FLOOR)
                     if (loud) {
                         speaking = true
                         preRoll.forEach { out.write(it) }
@@ -130,6 +132,7 @@ class VadRecorder(
         private const val CALIBRATION_FRAMES = 6
         private const val PRE_ROLL_FRAMES = 10
         private const val MIN_THRESHOLD = 450f
+        private const val MAX_NOISE_FLOOR = 900f
 
         /** Aggiunge l'intestazione WAV a un PCM 16 bit mono. */
         fun wav(pcm: ByteArray): ByteArray {

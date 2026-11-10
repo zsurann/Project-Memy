@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "Nexa"
+rootProject.name = "Memy"
 include(":app")

@@ -1,4 +1,4 @@
-name: Compila APK di Nexa
+name: Compila APK di Memy
 
 on:
   push:
@@ -22,7 +22,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Test
-        run: ./gradlew :app:testDebugUnitTest --tests 'com.nexa.assistant.agent.*'
+        run: ./gradlew :app:testDebugUnitTest --tests 'com.nexa.assistant.agent.*' --tests 'com.nexa.assistant.speech.*' --tests 'com.nexa.assistant.tools.*'
 
       - name: Compila APK
         run: ./gradlew :app:assembleRelease
@@ -31,30 +31,33 @@ jobs:
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          cp app/build/outputs/apk/release/app-release.apk Nexa.apk
+          cp app/build/outputs/apk/release/app-release.apk Memy.apk
+          # Copia con il vecchio nome: serve alle versioni già installate (quando l'app si chiamava Nexa) per aggiornarsi.
+          cp Memy.apk Nexa.apk
           NOTES=$(printf '%s' "${COMMIT_MSG:-Nuova versione}" | head -n 1)
           jq -n \
             --argjson code "${{ github.run_number }}" \
-            --arg name "0.1.${{ github.run_number }}" \
+            --arg name "1.0.${{ github.run_number }}" \
             --arg notes "$NOTES" \
             '{versionCode: $code, versionName: $name, notes: $notes}' > version.json
           cat version.json
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Nexa-apk
-          path: Nexa.apk
+          name: Memy-apk
+          path: Memy.apk
 
       # Pubblica (o aggiorna) la release "ultima-versione": la pagina si apre dal telefono e l'APK si scarica con un tocco.
       - name: Pubblica release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ultima-versione
-          name: Nexa — ultima versione
+          name: Memy — ultima versione
           body: |
-            Versione 0.1.${{ github.run_number }} — compilata automaticamente dal commit ${{ github.sha }}.
-            Scarica **Nexa.apk** qui sotto e aprilo sul telefono per installarlo o aggiornarlo.
+            Versione 1.0.${{ github.run_number }} — compilata automaticamente dal commit ${{ github.sha }}.
+            Scarica **Memy.apk** qui sotto e aprilo sul telefono per installarlo o aggiornarlo.
           files: |
+            Memy.apk
             Nexa.apk
             version.json
           overwrite_files: true

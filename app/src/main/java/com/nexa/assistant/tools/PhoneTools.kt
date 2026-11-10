@@ -1,10 +1,8 @@
 package com.nexa.assistant.tools
 
 import android.Manifest
-import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
@@ -13,21 +11,22 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.BatteryManager
 import android.provider.AlarmClock
-import android.provider.CalendarContract
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.telephony.SmsManager
 import android.view.KeyEvent
-import androidx.core.content.ContextCompat
-import java.text.Normalizer
+import com.nexa.assistant.access.MemyAccessibilityService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
 
-/** Tutti gli strumenti della Fase 1. */
-fun phoneTools(context: Context): List<NexaTool> {
+/** Strumenti di base: app, orologio, telefono, SMS, torcia, volume, musica, web, mappe. */
+fun basicTools(context: Context): List<MemyTool> {
     val ctx = context.applicationContext
     return listOf(
         DeviceStatusTool(ctx),
@@ -41,34 +40,14 @@ fun phoneTools(context: Context): List<NexaTool> {
         VolumeTool(ctx),
         MediaControlTool(ctx),
         OpenSettingsTool(ctx),
-        WebSearchTool(ctx),
+        OpenWebTool(ctx),
         NavigateTool(ctx),
-        CalendarEventTool(ctx),
     )
 }
 
-private fun Context.hasPermission(p: String) =
-    ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
-
-private fun Context.launch(intent: Intent): Boolean = try {
-    startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    true
-} catch (e: ActivityNotFoundException) {
-    false
-} catch (e: SecurityException) {
-    false
-}
-
-private fun normalize(s: String): String =
-    Normalizer.normalize(s.lowercase(Locale.ROOT), Normalizer.Form.NFD)
-        .replace(Regex("\\p{M}"), "")
-        .replace(Regex("[^a-z0-9 ]"), " ")
-        .replace(Regex("\\s+"), " ")
-        .trim()
-
 // ---------------------------------------------------------------------------
 
-class DeviceStatusTool(private val ctx: Context) : NexaTool {
+class DeviceStatusTool(private val ctx: Context) : MemyTool {
     override val name = "get_device_status"
     override val description =
         "Restituisce data e ora attuali, livello della batteria, stato di carica e connessione di rete del telefono."
@@ -96,11 +75,11 @@ class DeviceStatusTool(private val ctx: Context) : NexaTool {
     }
 }
 
-class OpenAppTool(private val ctx: Context) : NexaTool {
+class OpenAppTool(private val ctx: Context) : MemyTool {
     override val name = "open_app"
     override val description =
         "Apre un'app installata sul telefono cercandola per nome (es. 'WhatsApp', 'Fotocamera', 'Impostazioni'). " +
-            "Se non la trova restituisce i nomi delle app più simili."
+            "Se il controllo dello schermo è attivo restituisce anche lo schermo dell'app. Se non la trova elenca le app installate."
     override val properties = mapOf("app_name" to prop("string", "Nome dell'app da aprire"))
     override val required = listOf("app_name")
 
@@ -132,12 +111,15 @@ class OpenAppTool(private val ctx: Context) : NexaTool {
         }
         val intent = pm.getLaunchIntentForPackage(best.second)
             ?: return ToolResult.error("L'app ${best.first} non può essere aperta.")
-        return if (ctx.launch(intent)) ToolResult.ok("Aperta l'app ${best.first}.")
-        else ToolResult.error("Impossibile aprire ${best.first}.")
+        if (!ctx.launch(intent)) return ToolResult.error("Impossibile aprire ${best.first}.")
+        // Se Memy può vedere lo schermo, restituisce subito quello dell'app appena aperta.
+        val svc = MemyAccessibilityService.instance ?: return ToolResult.ok("Aperta l'app ${best.first}.")
+        delay(1300)
+        return ToolResult.ok("Aperta l'app ${best.first}.\nSchermo:\n" + withContext(Dispatchers.Main) { svc.readScreen() })
     }
 }
 
-class SetAlarmTool(private val ctx: Context) : NexaTool {
+class SetAlarmTool(private val ctx: Context) : MemyTool {
     override val name = "set_alarm"
     override val description = "Imposta una sveglia nell'app Orologio."
     override val properties = mapOf(
@@ -168,7 +150,7 @@ class SetAlarmTool(private val ctx: Context) : NexaTool {
     }
 }
 
-class SetTimerTool(private val ctx: Context) : NexaTool {
+class SetTimerTool(private val ctx: Context) : MemyTool {
     override val name = "set_timer"
     override val description = "Avvia un timer (conto alla rovescia)."
     override val properties = mapOf(
@@ -228,7 +210,7 @@ internal object Contacts {
         val found = try {
             search(ctx, who)
         } catch (e: SecurityException) {
-            return Result.failure(IllegalStateException("Nexa non ha il permesso di leggere i contatti. Concedilo nelle impostazioni di Nexa."))
+            return Result.failure(IllegalStateException("Memy non ha il permesso di leggere i contatti. Concedilo nelle impostazioni di Memy."))
         }
         return when {
             found.isEmpty() -> Result.failure(IllegalStateException("Nessun contatto trovato per '$who'."))
@@ -244,7 +226,7 @@ internal object Contacts {
     }
 }
 
-class FindContactTool(private val ctx: Context) : NexaTool {
+class FindContactTool(private val ctx: Context) : MemyTool {
     override val name = "find_contact"
     override val description = "Cerca un contatto in rubrica per nome e restituisce i numeri di telefono."
     override val properties = mapOf("name" to prop("string", "Nome (o parte del nome) del contatto"))
@@ -255,11 +237,11 @@ class FindContactTool(private val ctx: Context) : NexaTool {
         if (res.isEmpty()) ToolResult.ok("Nessun contatto trovato.")
         else ToolResult.ok(res.take(10).joinToString("\n") { "${it.name}: ${it.number}" })
     } catch (e: SecurityException) {
-        ToolResult.error("Permesso contatti non concesso. L'utente deve concederlo nelle impostazioni di Nexa.")
+        ToolResult.error("Permesso contatti non concesso. L'utente deve concederlo nelle impostazioni di Memy.")
     }
 }
 
-class CallTool(private val ctx: Context) : NexaTool {
+class CallTool(private val ctx: Context) : MemyTool {
     override val name = "make_call"
     override val description =
         "Chiama un contatto (per nome) o un numero di telefono. L'app chiederà conferma vocale all'utente prima di chiamare."
@@ -268,7 +250,7 @@ class CallTool(private val ctx: Context) : NexaTool {
 
     private var resolved: Contacts.Entry? = null
 
-    override fun confirmationPrompt(input: ToolInput): String? {
+    override suspend fun confirmationPrompt(input: ToolInput): String? {
         val entry = Contacts.resolve(ctx, input.requireString("recipient")).getOrNull()
         resolved = entry
         return entry?.let { "Vuoi che chiami ${it.name}${if (it.name != it.number) ", al numero ${it.number}" else ""}?" }
@@ -287,7 +269,7 @@ class CallTool(private val ctx: Context) : NexaTool {
     }
 }
 
-class SendSmsTool(private val ctx: Context) : NexaTool {
+class SendSmsTool(private val ctx: Context) : MemyTool {
     override val name = "send_sms"
     override val description =
         "Invia un SMS a un contatto (per nome) o a un numero. L'app leggerà il messaggio all'utente e chiederà conferma prima di inviarlo."
@@ -299,7 +281,7 @@ class SendSmsTool(private val ctx: Context) : NexaTool {
 
     private var resolved: Contacts.Entry? = null
 
-    override fun confirmationPrompt(input: ToolInput): String? {
+    override suspend fun confirmationPrompt(input: ToolInput): String? {
         val entry = Contacts.resolve(ctx, input.requireString("recipient")).getOrNull()
         resolved = entry
         return entry?.let { "Invio a ${it.name} questo SMS: \"${input.requireString("message")}\". Confermi?" }
@@ -327,7 +309,7 @@ class SendSmsTool(private val ctx: Context) : NexaTool {
     }
 }
 
-class FlashlightTool(private val ctx: Context) : NexaTool {
+class FlashlightTool(private val ctx: Context) : MemyTool {
     override val name = "set_flashlight"
     override val description = "Accende o spegne la torcia del telefono."
     override val properties = mapOf("on" to prop("boolean", "true per accendere, false per spegnere"))
@@ -348,7 +330,7 @@ class FlashlightTool(private val ctx: Context) : NexaTool {
     }
 }
 
-class VolumeTool(private val ctx: Context) : NexaTool {
+class VolumeTool(private val ctx: Context) : MemyTool {
     override val name = "set_volume"
     override val description =
         "Imposta il volume del telefono in percentuale (0-100), oppure attiva/disattiva il silenzioso."
@@ -380,7 +362,7 @@ class VolumeTool(private val ctx: Context) : NexaTool {
     }
 }
 
-class MediaControlTool(private val ctx: Context) : NexaTool {
+class MediaControlTool(private val ctx: Context) : MemyTool {
     override val name = "media_control"
     override val description = "Controlla la musica o il video in riproduzione in qualsiasi app."
     override val properties = mapOf(
@@ -406,7 +388,7 @@ class MediaControlTool(private val ctx: Context) : NexaTool {
     }
 }
 
-class OpenSettingsTool(private val ctx: Context) : NexaTool {
+class OpenSettingsTool(private val ctx: Context) : MemyTool {
     override val name = "open_settings"
     override val description =
         "Apre una schermata delle impostazioni di sistema. Da Android 10 le app non possono accendere Wi-Fi/Bluetooth da sole: " +
@@ -440,10 +422,10 @@ class OpenSettingsTool(private val ctx: Context) : NexaTool {
     }
 }
 
-class WebSearchTool(private val ctx: Context) : NexaTool {
+class OpenWebTool(private val ctx: Context) : MemyTool {
     override val name = "open_web"
     override val description =
-        "Apre il browser con una ricerca web o con un indirizzo preciso. Usalo quando l'utente vuole vedere qualcosa online."
+        "Apre il browser del telefono per MOSTRARE all'utente una ricerca o una pagina. Per rispondere tu a una domanda usa invece la ricerca web."
     override val properties = mapOf(
         "query" to prop("string", "Testo da cercare, oppure un URL completo (https://...)"),
     )
@@ -458,7 +440,7 @@ class WebSearchTool(private val ctx: Context) : NexaTool {
     }
 }
 
-class NavigateTool(private val ctx: Context) : NexaTool {
+class NavigateTool(private val ctx: Context) : MemyTool {
     override val name = "navigate_to"
     override val description = "Apre l'app di mappe installata con la destinazione indicata."
     override val properties = mapOf("destination" to prop("string", "Indirizzo o luogo di destinazione"))
@@ -469,33 +451,5 @@ class NavigateTool(private val ctx: Context) : NexaTool {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(dest)))
         return if (ctx.launch(intent)) ToolResult.ok("Aperte le mappe per: $dest")
         else ToolResult.error("Nessuna app di mappe installata.")
-    }
-}
-
-class CalendarEventTool(private val ctx: Context) : NexaTool {
-    override val name = "create_calendar_event"
-    override val description =
-        "Apre il calendario con un nuovo evento già compilato; l'utente lo salva con un tocco."
-    override val properties = mapOf(
-        "title" to prop("string", "Titolo dell'evento"),
-        "start" to prop("string", "Inizio in formato ISO locale, es. 2026-11-12T15:30"),
-        "duration_minutes" to prop("integer", "Durata in minuti (predefinito 60)"),
-        "location" to prop("string", "Luogo facoltativo"),
-    )
-    override val required = listOf("title", "start")
-
-    override suspend fun execute(input: ToolInput): ToolResult {
-        val start = runCatching { LocalDateTime.parse(input.requireString("start")) }.getOrNull()
-            ?: return ToolResult.error("Data di inizio non valida, usa il formato 2026-11-12T15:30")
-        val startMs = start.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-        val endMs = startMs + (input.int("duration_minutes") ?: 60) * 60_000L
-        val intent = Intent(Intent.ACTION_INSERT, CalendarContract.Events.CONTENT_URI).apply {
-            putExtra(CalendarContract.Events.TITLE, input.requireString("title"))
-            putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, startMs)
-            putExtra(CalendarContract.EXTRA_EVENT_END_TIME, endMs)
-            input.string("location")?.let { putExtra(CalendarContract.Events.EVENT_LOCATION, it) }
-        }
-        return if (ctx.launch(intent)) ToolResult.ok("Aperto il calendario con l'evento pronto: l'utente deve toccare Salva.")
-        else ToolResult.error("Nessuna app calendario trovata.")
     }
 }

@@ -12,6 +12,7 @@ import com.anthropic.errors.PermissionDeniedException
 import com.anthropic.errors.RateLimitException
 import com.anthropic.errors.UnauthorizedException
 import com.anthropic.helpers.MessageAccumulator
+import com.anthropic.models.messages.Base64ImageSource
 import com.anthropic.models.messages.CacheControlEphemeral
 import com.anthropic.models.messages.ContentBlockParam
 import com.anthropic.models.messages.Message
@@ -23,9 +24,10 @@ import com.anthropic.models.messages.Tool
 import com.anthropic.models.messages.ToolResultBlockParam
 import com.anthropic.models.messages.ToolUseBlock
 import com.anthropic.models.messages.UserLocation
+import com.anthropic.models.messages.WebSearchTool20250305
 import com.anthropic.models.messages.WebSearchTool20260209
 import com.nexa.assistant.data.ClaudeModel
-import com.nexa.assistant.tools.NexaTool
+import com.nexa.assistant.tools.MemyTool
 import com.nexa.assistant.tools.ToolInput
 import com.nexa.assistant.tools.ToolResult
 import kotlinx.coroutines.CancellationException
@@ -33,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import java.time.ZoneId
+import java.util.Base64
 import java.util.Locale
 import kotlin.coroutines.coroutineContext
 
@@ -41,8 +44,8 @@ import kotlin.coroutines.coroutineContext
  * rimanda i risultati e ripete finché Claude non ha finito. Il testo arriva frase per frase,
  * così la voce inizia a parlare quasi subito.
  */
-class NexaAgent(
-    private val tools: List<NexaTool>,
+class MemyAgent(
+    private val tools: List<MemyTool>,
     private val hooks: Hooks,
     /** Solo per i test: indirizzo di un server finto al posto di api.anthropic.com. */
     private val baseUrl: String? = null,
@@ -51,7 +54,7 @@ class NexaAgent(
         /** Chiede all'utente conferma per un'azione delicata. */
         suspend fun confirm(prompt: String): Boolean
 
-        /** Nexa sta usando uno strumento (o "web_search"). */
+        /** Memy sta usando uno strumento (o "web_search"). */
         fun onToolUse(toolName: String) {}
 
         /** Una frase completa, pronta da leggere ad alta voce. */
@@ -66,6 +69,7 @@ class NexaAgent(
         val model: ClaudeModel,
         val userName: String,
         val webSearch: Boolean,
+        val memories: List<String> = emptyList(),
     )
 
     class AgentException(message: String) : Exception(message)
@@ -120,7 +124,7 @@ class NexaAgent(
                     }
                 }
             }
-            "Ho fatto troppi passaggi senza finire. Prova a chiedermelo in un altro modo."
+            "Ho fatto molti passaggi senza riuscire a finire. Dimmi come preferisci che continui.".also { hooks.onSentence(it) }
         } catch (e: AnthropicServiceException) {
             rollback(checkpoint)
             throw AgentException(describe(e))
@@ -155,7 +159,6 @@ class NexaAgent(
                         hooks.onText(spoken.toString().trim())
                     }
                 }
-                event.contentBlockStop().ifPresent { splitter.flush() }
             }
         }
         splitter.flush()
@@ -170,13 +173,21 @@ class NexaAgent(
     private suspend fun runTools(response: Message): MessageParam {
         val results = response.content().mapNotNull { it.toolUse().orElse(null) }.map { block ->
             val result = executeTool(block)
-            ContentBlockParam.ofToolResult(
-                ToolResultBlockParam.builder()
-                    .toolUseId(block.id())
-                    .content(result.text)
-                    .isError(result.isError)
-                    .build()
+            val builder = ToolResultBlockParam.builder().toolUseId(block.id()).isError(result.isError)
+            val image = result.imageJpeg
+            if (image == null) builder.content(result.text)
+            else builder.contentOfBlocks(
+                listOf(
+                    ToolResultBlockParam.Content.Block.ofText(result.text),
+                    ToolResultBlockParam.Content.Block.ofImage(
+                        Base64ImageSource.builder()
+                            .mediaType(Base64ImageSource.MediaType.IMAGE_JPEG)
+                            .data(Base64.getEncoder().encodeToString(image))
+                            .build()
+                    ),
+                )
             )
+            ContentBlockParam.ofToolResult(builder.build())
         }
         // Tutti i risultati vanno in un unico messaggio utente.
         return MessageParam.ofUserOfContentBlockParams(results)
@@ -201,7 +212,7 @@ class NexaAgent(
         } catch (e: IllegalArgumentException) {
             ToolResult.error(e.message ?: "Parametri non validi")
         } catch (e: SecurityException) {
-            ToolResult.error("Permesso mancante: ${e.message}. L'utente deve concederlo nelle impostazioni di Nexa.")
+            ToolResult.error("Permesso mancante: ${e.message}. L'utente deve concederlo nelle impostazioni di Memy.")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -210,29 +221,31 @@ class NexaAgent(
     }
 
     private fun buildParams(o: Options): MessageCreateParams {
-        val web = o.webSearch && o.model.supportsWebSearch
         val builder = MessageCreateParams.builder()
             .model(o.model.id)
             .maxTokens(16000L)
-            .system(SystemPrompt.build(o.userName, web))
+            .system(SystemPrompt.build(o.userName, o.webSearch, o.memories))
             .messages(history.toList())
-            // Effort basso: risposte rapide, adatte alla conversazione a voce.
-            .outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.LOW).build())
+            // Effort contenuto: risposte rapide, adatte alla conversazione a voce.
+            .outputConfig(
+                OutputConfig.builder()
+                    .effort(if (o.model == ClaudeModel.HAIKU) OutputConfig.Effort.MEDIUM else OutputConfig.Effort.LOW)
+                    .build()
+            )
             // Riutilizza la parte fissa (istruzioni + strumenti) tra una richiesta e l'altra: costa meno.
             .cacheControl(CacheControlEphemeral.builder().build())
         toolDefs.forEach { builder.addTool(it) }
-        if (web) {
-            builder.addTool(
-                WebSearchTool20260209.builder()
-                    .maxUses(3L)
-                    .userLocation(
-                        UserLocation.builder()
-                            .country(Locale.getDefault().country.ifBlank { "IT" })
-                            .timezone(ZoneId.systemDefault().id)
-                            .build()
-                    )
-                    .build()
-            )
+        if (o.webSearch) {
+            val location = UserLocation.builder()
+                .country(Locale.getDefault().country.ifBlank { "IT" })
+                .timezone(ZoneId.systemDefault().id)
+                .build()
+            // Haiku usa la versione base della ricerca web; Opus e Sonnet quella con filtro dinamico dei risultati.
+            if (o.model == ClaudeModel.HAIKU) {
+                builder.addTool(WebSearchTool20250305.builder().maxUses(3L).userLocation(location).build())
+            } else {
+                builder.addTool(WebSearchTool20260209.builder().maxUses(3L).userLocation(location).build())
+            }
         }
         if (o.model != ClaudeModel.HAIKU) {
             // Se Claude rifiuta per un falso allarme di sicurezza, il server riprova con un modello alternativo.
@@ -255,7 +268,7 @@ class NexaAgent(
         return client!!
     }
 
-    private fun toApiTool(tool: NexaTool): Tool {
+    private fun toApiTool(tool: MemyTool): Tool {
         val props = Tool.InputSchema.Properties.builder()
         tool.properties.forEach { (key, schema) -> props.putAdditionalProperty(key, JsonValue.from(schema)) }
         return Tool.builder()
@@ -283,8 +296,8 @@ class NexaAgent(
     }
 
     private companion object {
-        const val MAX_STEPS = 10
-        const val MAX_HISTORY = 60
+        const val MAX_STEPS = 40
+        const val MAX_HISTORY = 80
         const val CONVERSATION_TIMEOUT_MS = 15 * 60 * 1000L
     }
 }

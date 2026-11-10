@@ -1,7 +1,7 @@
 package com.nexa.assistant.agent
 
 import com.nexa.assistant.data.ClaudeModel
-import com.nexa.assistant.tools.NexaTool
+import com.nexa.assistant.tools.MemyTool
 import com.nexa.assistant.tools.ToolInput
 import com.nexa.assistant.tools.ToolResult
 import com.nexa.assistant.tools.prop
@@ -19,24 +19,24 @@ import org.junit.Before
 import org.junit.Test
 
 /** Verifica il ciclo completo agente → strumento → risposta in streaming, con un server finto al posto di Claude. */
-class NexaAgentTest {
+class MemyAgentTest {
 
     private lateinit var server: MockWebServer
 
-    private class FakeTorch(private val needsConfirm: Boolean = false) : NexaTool {
+    private class FakeTorch(private val needsConfirm: Boolean = false) : MemyTool {
         val calls = mutableListOf<ToolInput>()
         override val name = "set_flashlight"
         override val description = "Accende o spegne la torcia."
         override val properties = mapOf("on" to prop("boolean", "accesa?"))
         override val required = listOf("on")
-        override fun confirmationPrompt(input: ToolInput) = if (needsConfirm) "Confermi?" else null
+        override suspend fun confirmationPrompt(input: ToolInput) = if (needsConfirm) "Confermi?" else null
         override suspend fun execute(input: ToolInput): ToolResult {
             calls += input
             return ToolResult.ok("Torcia accesa.")
         }
     }
 
-    private class Hooks(private val answer: Boolean) : NexaAgent.Hooks {
+    private class Hooks(private val answer: Boolean) : MemyAgent.Hooks {
         val prompts = mutableListOf<String>()
         val sentences = mutableListOf<String>()
         val tools = mutableListOf<String>()
@@ -85,11 +85,11 @@ class NexaAgentTest {
         end("end_turn"), stop,
     )
 
-    private fun agent(tool: NexaTool, hooks: NexaAgent.Hooks) =
-        NexaAgent(listOf(tool), hooks, baseUrl = server.url("/").toString().trimEnd('/'))
+    private fun agent(tool: MemyTool, hooks: MemyAgent.Hooks) =
+        MemyAgent(listOf(tool), hooks, baseUrl = server.url("/").toString().trimEnd('/'))
 
     private fun opts(model: ClaudeModel = ClaudeModel.OPUS, web: Boolean = true) =
-        NexaAgent.Options("sk-test", model, "Luca", web)
+        MemyAgent.Options("sk-test", model, "Luca", web)
 
     @Test
     fun streamsSentencesRunsToolAndKeepsThinking() = runBlocking {
@@ -153,12 +153,46 @@ class NexaAgentTest {
     }
 
     @Test
-    fun haikuHasNoWebSearchNorFallback() = runBlocking {
+    fun haikuUsesBasicWebSearchAndNoFallback() = runBlocking {
         server.enqueue(finalStream())
         agent(FakeTorch(), Hooks(true)).run("ciao", opts(ClaudeModel.HAIKU))
         val body = JSONObject(server.takeRequest().body.readUtf8())
         assertFalse(body.has("fallbacks"))
+        val tools = body.getJSONArray("tools")
+        val web = (0 until tools.length()).map { tools.getJSONObject(it) }.first { it.getString("name") == "web_search" }
+        assertEquals("web_search_20250305", web.getString("type"))
+        assertEquals("medium", body.getJSONObject("output_config").getString("effort"))
+    }
+
+    @Test
+    fun memoriesReachTheSystemPrompt() = runBlocking {
+        server.enqueue(finalStream())
+        agent(FakeTorch(), Hooks(true)).run(
+            "ciao", MemyAgent.Options("sk-test", ClaudeModel.OPUS, "", webSearch = false, memories = listOf("La sorella si chiama Giulia")),
+        )
+        val body = JSONObject(server.takeRequest().body.readUtf8())
+        assertTrue(body.getString("system").contains("La sorella si chiama Giulia"))
         assertFalse(toolNames(body.getJSONArray("tools")).contains("web_search"))
+    }
+
+    @Test
+    fun imageResultsAreSentAsImageBlocks() = runBlocking {
+        server.enqueue(toolUseStream())
+        server.enqueue(finalStream())
+        val camera = object : MemyTool {
+            override val name = "set_flashlight"
+            override val description = "finto"
+            override val properties = mapOf("on" to prop("boolean", "x"))
+            override val required = listOf("on")
+            override suspend fun execute(input: ToolInput) = ToolResult("Ecco lo schermo", imageJpeg = byteArrayOf(1, 2, 3))
+        }
+        agent(camera, Hooks(true)).run("guarda", opts())
+        server.takeRequest()
+        val msgs = JSONObject(server.takeRequest().body.readUtf8()).getJSONArray("messages")
+        val content = msgs.getJSONObject(2).getJSONArray("content").getJSONObject(0).getJSONArray("content")
+        assertEquals("text", content.getJSONObject(0).getString("type"))
+        assertEquals("image", content.getJSONObject(1).getString("type"))
+        assertEquals("image/jpeg", content.getJSONObject(1).getJSONObject("source").getString("media_type"))
     }
 
     @Test
@@ -170,7 +204,7 @@ class NexaAgentTest {
         try {
             agent(FakeTorch(), Hooks(true)).run("ciao", opts())
             fail("doveva fallire")
-        } catch (e: NexaAgent.AgentException) {
+        } catch (e: MemyAgent.AgentException) {
             assertTrue(e.message!!.contains("chiave API non è valida"))
         }
     }

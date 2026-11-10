@@ -5,6 +5,8 @@ plugins {
 }
 
 android {
+    // L'identificativo interno resta quello storico: cambiarlo creerebbe una seconda app sul telefono,
+    // senza le impostazioni e le chiavi già salvate.
     namespace = "com.nexa.assistant"
     compileSdk = 36
 
@@ -15,21 +17,24 @@ android {
         // Su GitHub ogni compilazione ha un numero più alto, così l'aggiornamento si installa sopra.
         val buildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionCode = buildNumber
-        versionName = "0.1.$buildNumber"
+        versionName = "1.0.$buildNumber"
 
         // Vivo X300 Pro e quasi tutti i telefoni moderni sono a 64 bit ARM.
         ndk { abiFilters += listOf("arm64-v8a") }
 
-        // Da qui l'app scarica gli aggiornamenti (release "ultima-versione" del repository GitHub).
+        // Da qui l'app scarica gli aggiornamenti (release "ultima-versione"). Prova prima il nuovo nome
+        // del repository, poi quello storico: funziona sia prima sia dopo la rinomina su GitHub.
         buildConfigField(
-            "String", "UPDATE_BASE_URL",
-            "\"https://github.com/zsurann/Project-Nexa/releases/download/ultima-versione\"",
+            "String", "UPDATE_BASE_URLS",
+            "\"https://github.com/zsurann/Memy/releases/download/ultima-versione," +
+                "https://github.com/zsurann/Project-Nexa/releases/download/ultima-versione\"",
         )
     }
 
     signingConfigs {
         // Chiave fissa del progetto: così ogni nuovo APK si installa sopra il precedente
-        // senza dover disinstallare. Vedi README per usare una chiave privata tua.
+        // senza dover disinstallare. I nomi "nexa" sono quelli storici dell'app (prima si chiamava Nexa):
+        // cambiarli significherebbe cambiare firma e perdere gli aggiornamenti.
         create("nexa") {
             storeFile = rootProject.file("keystore/nexa-debug.jks")
             storePassword = System.getenv("NEXA_KEYSTORE_PASSWORD") ?: "nexa-debug"
