@@ -9,8 +9,8 @@ import com.nexa.assistant.data.SttEngine
 import com.nexa.assistant.speech.SpeechToText
 import com.nexa.assistant.speech.SystemSpeechToText
 import com.nexa.assistant.speech.VoicePlayer
-import com.nexa.assistant.speech.VoskModelManager
-import com.nexa.assistant.speech.VoskSpeechToText
+import com.nexa.assistant.speech.ParakeetModel
+import com.nexa.assistant.speech.ParakeetSpeechToText
 import com.nexa.assistant.tools.basicTools
 import com.nexa.assistant.tools.dataTools
 import com.nexa.assistant.tools.notificationTools
@@ -56,7 +56,7 @@ data class UiState(
     val lines: List<ChatLine> = emptyList(),
     val pendingConfirmation: String? = null,
     val modelDownloadProgress: Float? = null,
-    val voiceModelInstalled: Boolean = false,
+    val asrModelInstalled: Boolean = false,
     val listenerName: String = "",
 )
 
@@ -67,8 +67,8 @@ class MemyController(private val app: MemyApp) {
     private val settings get() = app.settings
     private val ids = AtomicLong()
 
-    private val voskModels = VoskModelManager(app)
-    private val vosk = VoskSpeechToText(voskModels)
+    private val asrModel = ParakeetModel(app)
+    private val parakeet = ParakeetSpeechToText(app, asrModel)
     val googleDevice = SystemSpeechToText(app, googleOnly = true)
     private val anySystem = SystemSpeechToText(app, googleOnly = false)
     private var activeStt: SpeechToText? = null
@@ -77,7 +77,7 @@ class MemyController(private val app: MemyApp) {
         v.onFallback = { msg -> scope.launch { notice(msg) } }
     }
 
-    private val _state = MutableStateFlow(UiState(voiceModelInstalled = voskModels.isInstalled()))
+    private val _state = MutableStateFlow(UiState(asrModelInstalled = asrModel.isInstalled()))
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     /** Volume della voce (0..1), separato dallo stato per non ridisegnare tutta l'interfaccia. */
@@ -147,6 +147,9 @@ class MemyController(private val app: MemyApp) {
             }
         }
         voice.refreshCatalog()
+        // Carica in anticipo il modello di ascolto e libera lo spazio del vecchio modello Vosk (non più usato).
+        parakeet.warmUp()
+        scope.launch(Dispatchers.IO) { java.io.File(app.filesDir, "vosk-model-it").deleteRecursively() }
     }
 
     fun hasMicPermission() =
@@ -154,9 +157,9 @@ class MemyController(private val app: MemyApp) {
 
     /** Sceglie il motore di ascolto in base alle impostazioni e a cosa è disponibile. */
     fun resolveStt(): SpeechToText? = when (settings.state.value.sttEngine) {
-        SttEngine.AUTO -> listOf(googleDevice, vosk, anySystem).firstOrNull { it.isReady() }
+        SttEngine.AUTO -> listOf(parakeet, googleDevice, anySystem).firstOrNull { it.isReady() }
+        SttEngine.PARAKEET -> parakeet.takeIf { it.isReady() }
         SttEngine.GOOGLE_DEVICE -> googleDevice.takeIf { it.isReady() }
-        SttEngine.VOSK -> vosk.takeIf { it.isReady() }
     }
 
     /**
@@ -249,7 +252,7 @@ class MemyController(private val app: MemyApp) {
                 if (settings.state.value.sttEngine == SttEngine.GOOGLE_DEVICE) {
                     "Il riconoscimento di Google non è disponibile su questo telefono. Scegli un altro motore nelle impostazioni."
                 } else {
-                    "Per ascoltarti scarica il modello offline in Impostazioni → Ascolto (circa 50 MB, una volta sola)."
+                    "Per ascoltarti scarica il modello Parakeet in Impostazioni → Ascolto (circa 490 MB, una volta sola, meglio con il Wi-Fi)."
                 }
             )
             null
@@ -414,19 +417,26 @@ class MemyController(private val app: MemyApp) {
         _state.update { it.copy(lines = emptyList()) }
     }
 
-    fun downloadVoiceModel() {
+    /** Scarica il modello di ascolto Parakeet (circa 490 MB). */
+    fun downloadAsrModel() {
         if (_state.value.modelDownloadProgress != null) return
         scope.launch {
             _state.update { it.copy(modelDownloadProgress = 0f) }
             try {
-                voskModels.download { p -> _state.update { it.copy(modelDownloadProgress = p) } }
+                asrModel.download { p -> _state.update { it.copy(modelDownloadProgress = p) } }
+                parakeet.warmUp()
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                notice("Download non riuscito: ${e.message}. Controlla la connessione e riprova.")
+                notice("Download del modello di ascolto non riuscito: ${e.message}. Controlla la connessione e riprova.")
             }
-            _state.update { it.copy(modelDownloadProgress = null, voiceModelInstalled = voskModels.isInstalled()) }
+            _state.update { it.copy(modelDownloadProgress = null, asrModelInstalled = asrModel.isInstalled()) }
         }
+    }
+
+    fun deleteAsrModel() {
+        asrModel.delete()
+        _state.update { it.copy(asrModelInstalled = false) }
     }
 
     private fun notice(text: String) = addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = text, isNotice = true))

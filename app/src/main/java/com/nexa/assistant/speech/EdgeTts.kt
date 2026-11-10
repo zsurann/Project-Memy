@@ -51,18 +51,24 @@ class EdgeTts(
         .build(),
 ) {
     /** Sintetizza un testo e restituisce l'audio MP3 (24 kHz, 48 kbit/s). Bloccante. */
-    fun synthesize(text: String, voice: String, ratePercent: Int = 0, pitchHz: Int = 0): ByteArray {
+    fun synthesize(
+        text: String,
+        voice: String,
+        ratePercent: Int = 0,
+        pitchHz: Int = 0,
+        outputFormat: String = MP3_FORMAT,
+    ): ByteArray {
         val clean = escapeXml(removeIncompatible(text)).trim()
         require(clean.isNotEmpty()) { "Testo vuoto" }
         return try {
-            synthesizeOnce(clean, voice, ratePercent, pitchHz)
+            synthesizeOnce(clean, voice, ratePercent, pitchHz, outputFormat)
         } catch (e: EdgeTtsException) {
             // 403: probabilmente l'orologio del telefono non è preciso. Si corregge con l'ora del server e si riprova.
-            if (e.code == 403 && Drm.lastServerSkewAdjusted) synthesizeOnce(clean, voice, ratePercent, pitchHz) else throw e
+            if (e.code == 403 && Drm.lastServerSkewAdjusted) synthesizeOnce(clean, voice, ratePercent, pitchHz, outputFormat) else throw e
         }
     }
 
-    private fun synthesizeOnce(escapedText: String, voice: String, ratePercent: Int, pitchHz: Int): ByteArray {
+    private fun synthesizeOnce(escapedText: String, voice: String, ratePercent: Int, pitchHz: Int, format: String): ByteArray {
         val request = Request.Builder()
             .url(
                 "$WSS_URL&ConnectionId=${connectId()}&Sec-MS-GEC=${Drm.secMsGec()}&Sec-MS-GEC-Version=$SEC_MS_GEC_VERSION"
@@ -78,7 +84,7 @@ class EdgeTts(
 
         val socket = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                webSocket.send(speechConfig())
+                webSocket.send(speechConfig(format))
                 webSocket.send(ssmlMessage(mkSsml(voice, ratePercent, pitchHz, escapedText)))
             }
 
@@ -97,7 +103,7 @@ class EdgeTts(
                 if (headerLength + 2 > data.size) return
                 val headers = String(data, 2, headerLength, Charsets.UTF_8)
                 if (headerValue(headers, "Path") != "audio") return
-                if (headerValue(headers, "Content-Type") != "audio/mpeg") return
+                if (headerValue(headers, "Content-Type").isNullOrEmpty()) return
                 val start = 2 + headerLength
                 if (start < data.size) {
                     synchronized(audio) { audio.write(data, start, data.size - start) }
@@ -203,13 +209,16 @@ class EdgeTts(
                 .apply { timeZone = TimeZone.getTimeZone("UTC") }
                 .format(Date())
 
-        private fun speechConfig(): String =
+        /** Il servizio "Leggi ad alta voce" accetta solo questo MP3 e "webm-24khz-16bit-mono-opus". */
+        const val MP3_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
+
+        private fun speechConfig(format: String): String =
             "X-Timestamp:${dateToString()}\r\n" +
                 "Content-Type:application/json; charset=utf-8\r\n" +
                 "Path:speech.config\r\n\r\n" +
                 "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{" +
                 "\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}," +
-                "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
+                "\"outputFormat\":\"$format\"}}}}\r\n"
 
         private fun ssmlMessage(ssml: String): String =
             "X-RequestId:${connectId()}\r\n" +

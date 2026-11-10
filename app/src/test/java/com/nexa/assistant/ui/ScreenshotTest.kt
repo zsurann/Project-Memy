@@ -85,7 +85,7 @@ class ScreenshotTest {
         pretendKeys()
         app.controller.setPreviewState(
             UiState(
-                phase = Phase.LISTENING, listenerName = "Offline (Vosk)", partial = "che tempo fa",
+                phase = Phase.LISTENING, listenerName = "Parakeet (offline)", partial = "che tempo fa",
                 lines = listOf(ChatLine(1, true, "Ciao Memy, come stai?"), ChatLine(2, false, "Ciao Genny! Sto benissimo, grazie. Tu come stai?")),
             ),
             0.8f,

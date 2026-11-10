@@ -18,12 +18,10 @@
 -dontwarn com.github.victools.**
 -dontwarn io.swagger.**
 
-# Vosk usa JNA per chiamare la libreria nativa.
--keep class com.sun.jna.** { *; }
--keep class * implements com.sun.jna.** { *; }
--keep class org.vosk.** { *; }
--dontwarn java.awt.**
--dontwarn com.sun.jna.**
 
 -dontwarn com.google.auto.value.**
 -dontwarn io.opentelemetry.**
+
+# sherpa-onnx: il codice nativo legge i campi delle classi di configurazione per nome.
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+-keepclassmembers class com.k2fsa.sherpa.onnx.** { *; }

@@ -15,9 +15,9 @@ enum class ClaudeModel(val id: String, val label: String, val description: Strin
 
 /** Chi trascrive la tua voce. */
 enum class SttEngine(val label: String, val description: String) {
-    AUTO("Automatico", "Usa Google se è installato, altrimenti il riconoscimento offline."),
-    GOOGLE_DEVICE("Google (sul telefono)", "Gratis e preciso, se è installata l'app Google."),
-    VOSK("Offline (Vosk)", "Funziona senza internet e senza Google."),
+    AUTO("Automatico", "Usa Parakeet se è scaricato, altrimenti Google (se presente)."),
+    PARAKEET("Parakeet (offline)", "Il più preciso: modello NVIDIA sul telefono, gratis e senza internet. ~490 MB."),
+    GOOGLE_DEVICE("Google (sul telefono)", "Gratis, se è installata l'app Google."),
 }
 
 /** La voce predefinita di Memy (Microsoft Edge, gratuita). */

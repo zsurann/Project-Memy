@@ -183,26 +183,40 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                 VoiceSection(app)
 
                 // ------------------------------------------------ Ascolto
-                SectionCard(Icons.Filled.Mic, "Ascolto", settings.sttEngine.label) {
+                SectionCard(
+                    Icons.Filled.Mic, "Ascolto",
+                    if (ui.asrModelInstalled || googleOnDevice) settings.sttEngine.label else "Scarica il modello per farti sentire",
+                    attention = !ui.asrModelInstalled && !googleOnDevice,
+                ) {
                     SttEngine.entries.forEach { e ->
                         val badge = when (e) {
                             SttEngine.GOOGLE_DEVICE -> if (googleOnDevice) "disponibile" else "non installato"
-                            SttEngine.VOSK -> if (ui.voiceModelInstalled) "installato" else "da scaricare"
+                            SttEngine.PARAKEET -> if (ui.asrModelInstalled) "installato" else "da scaricare"
                             SttEngine.AUTO -> null
                         }
                         Choice(settings.sttEngine == e, e.label, e.description, badge) { app.settings.setSttEngine(e) }
                     }
-                    if (!googleOnDevice) Hint("Su questo telefono non c'è il riconoscimento di Google: Memy usa quello offline, che va scaricato una volta.")
                     val progress = ui.modelDownloadProgress
                     when {
                         progress != null -> {
-                            Hint("Scarico il modello offline italiano… ${(progress * 100).toInt()}%")
+                            Hint("Scarico il modello Parakeet… ${(progress * 100).toInt()}% (circa 490 MB: tieni Memy aperta)")
                             LinearProgressIndicator(
                                 progress = { progress }, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)),
                                 color = MemyColors.Cyan, trackColor = MemyColors.Glass,
                             )
                         }
-                        !ui.voiceModelInstalled -> OutlineButton("Scarica modello offline (~50 MB)", app.controller::downloadVoiceModel, Modifier.fillMaxWidth())
+                        !ui.asrModelInstalled -> {
+                            Hint(
+                                "Parakeet è il modello di riconoscimento vocale più preciso che può girare sul telefono: " +
+                                    "capisce bene l'italiano, mette la punteggiatura e funziona anche senza internet. " +
+                                    "Si scarica una volta sola (meglio con il Wi-Fi)."
+                            )
+                            GradientButton("Scarica Parakeet (~490 MB)", app.controller::downloadAsrModel, Modifier.fillMaxWidth())
+                        }
+                        else -> Text(
+                            "Rimuovi il modello", style = MaterialTheme.typography.labelMedium, color = MemyColors.TextTertiary,
+                            modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { app.controller.deleteAsrModel() }.padding(vertical = 4.dp),
+                        )
                     }
                 }
 

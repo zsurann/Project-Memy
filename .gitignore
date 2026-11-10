@@ -7,3 +7,6 @@ build/
 captures/
 .externalNativeBuild/
 .cxx/
+
+# Scaricato in automatico dal build
+app/libs/*.aar

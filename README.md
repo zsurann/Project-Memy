@@ -37,7 +37,11 @@ Microfono → riconoscimento vocale → Claude (in streaming, con strumenti e ri
   È lo stesso servizio "Leggi ad alta voce" del browser Edge, usato con il protocollo della libreria open source
   [edge-tts](https://github.com/rany2/edge-tts). Non è un'API ufficiale: se Microsoft la cambia, Memy usa per un momento
   la voce del telefono finché non arriva un aggiornamento.
-- **Ascolto**: Google sul telefono (se presente) oppure Vosk offline.
+- **Ascolto**: [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), uno dei migliori modelli
+  di riconoscimento vocale open source, che gira **sul telefono** grazie a [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
+  È gratuito, funziona senza internet e mette la punteggiatura. Silero VAD capisce quando inizi e finisci di parlare.
+  Il modello si scarica una volta sola (circa 490 MB) da *Impostazioni → Ascolto*. In alternativa c'è Google, se
+  sul telefono è installata l'app Google.
 - **Conversazione continua**: dopo ogni risposta torna ad ascoltarti. Se tocchi la sfera mentre parla, la interrompi.
 - **Ti sente anche fuori dall'app**: durante una conversazione resta attivo un servizio con notifica "Memy". Così,
   mentre lavora in un'altra app, puoi rispondere a voce alle sue domande e conferme. Si spegne da solo pochi secondi
@@ -79,7 +83,8 @@ La voce e l'ascolto sono gratuiti.
 1. Dal telefono apri la pagina *Releases* di questo repository ("Memy — ultima versione") e scarica `Memy.apk`.
 2. Apri il file e consenti l'installazione da questa fonte.
 3. Apri Memy e inserisci la chiave di Claude (*Impostazioni → Chiave di Claude*).
-4. Scegli la voce ascoltando le anteprime (*Impostazioni → Voce*) e scarica il modello offline (*Impostazioni → Ascolto*).
+4. Scarica il modello di ascolto Parakeet (*Impostazioni → Ascolto*, circa 490 MB, meglio con il Wi-Fi) e scegli la
+   voce ascoltando le anteprime (*Impostazioni → Voce*).
 5. Attiva i poteri che vuoi (*Impostazioni → Poteri*).
 6. In *Impostazioni → Sempre pronta* segui i passaggi per OriginOS, così il telefono non chiude Memy.
 7. Aggiungi il riquadro **"Ehi Memy"** alle Impostazioni rapide: un tocco e Memy ti ascolta.
@@ -100,12 +105,19 @@ sia dopo la rinomina del repository.
 
 ## Compilare da soli
 
-Servono JDK 17 o successivo e l'SDK Android (piattaforma 36).
+Servono JDK 17 o successivo e l'SDK Android (piattaforma 36). Al primo build Gradle scarica da GitHub l'AAR ufficiale
+di sherpa-onnx 1.13.8 in `app/libs/` e ne verifica l'impronta SHA-256.
 
 ```bash
 ./gradlew :app:testDebugUnitTest --tests 'com.nexa.assistant.agent.*' --tests 'com.nexa.assistant.speech.*' --tests 'com.nexa.assistant.tools.*'
 ./gradlew :app:testDebugUnitTest --tests '*ScreenshotTest*'   # immagini dell'interfaccia in app/build/screenshots
 EDGE_LIVE=1 ./gradlew :app:testDebugUnitTest --tests '*EdgeTtsTest*'   # prova reale della voce Edge (serve internet)
+
+# Prova reale dell'ascolto: la voce Edge legge comandi italiani e Parakeet li trascrive (servono ffmpeg,
+# il modello estratto e le librerie native Linux di sherpa-onnx: sherpa-onnx-v1.13.8-linux-x64-jni.tar.bz2)
+ASR_LIVE=1 ASR_MODEL_DIR=/percorso/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 \
+  SHERPA_JNI_DIR=/percorso/lib LD_LIBRARY_PATH=/percorso/lib \
+  ./gradlew :app:testDebugUnitTest --tests '*ParakeetLiveTest*'
 ./gradlew :app:assembleRelease                                # APK in app/build/outputs/apk/release/
 ```
 
@@ -123,7 +135,7 @@ app/src/main/java/com/nexa/assistant/
 ├── agent/      # Ciclo con Claude in streaming, prompt di sistema, divisione in frasi
 ├── tools/      # Strumenti: base, schermo, notifiche, dati personali, sistema
 ├── access/     # Servizio di accessibilità e lettura delle notifiche
-├── speech/     # Voce Edge (EdgeTts + VoicePlayer), Vosk, riconoscimento di sistema
+├── speech/     # Voce Edge (EdgeTts + VoicePlayer), ascolto Parakeet + Silero VAD, riconoscimento Google
 ├── reminders/  # Promemoria
 ├── update/     # Aggiornamento automatico da GitHub
 ├── data/       # Impostazioni, memoria, chiavi cifrate
@@ -136,3 +148,11 @@ Per aggiungere uno strumento basta implementare `MemyTool` e registrarlo in `Mem
 
 - Parola di attivazione "Ehi Memy" sempre in ascolto e ruolo di assistente predefinito.
 - Routine ("quando arrivo a casa…") e azioni programmate.
+
+## Licenze dei componenti
+
+- Modello di ascolto [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3): licenza CC-BY-4.0
+  (versione int8 per sherpa-onnx pubblicata da k2-fsa).
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): Apache 2.0. [Silero VAD](https://github.com/snakers4/silero-vad): MIT.
+- La voce usa il servizio "Leggi ad alta voce" di Microsoft Edge tramite il protocollo di
+  [edge-tts](https://github.com/rany2/edge-tts) (LGPL-3.0, solo come riferimento: il codice di Memy è riscritto in Kotlin).
