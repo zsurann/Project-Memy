@@ -59,6 +59,9 @@ class MemyAgent(
         /** Memy sta usando uno strumento (o "web_search"). */
         fun onToolUse(toolName: String) {}
 
+        /** Claude ha iniziato a usare uno strumento: da qui lavora in silenzio. */
+        fun onWorkStarted() {}
+
         /** Una frase completa, pronta da leggere ad alta voce. */
         fun onSentence(sentence: String) {}
 
@@ -167,6 +170,7 @@ class MemyAgent(
                 accumulator.accumulate(event)
                 event.contentBlockStart().ifPresent { start ->
                     start.contentBlock().serverToolUse().ifPresent { hooks.onToolUse("web_search") }
+                    start.contentBlock().toolUse().ifPresent { hooks.onWorkStarted() }
                 }
                 event.contentBlockDelta().ifPresent { d ->
                     d.delta().text().ifPresent { t ->

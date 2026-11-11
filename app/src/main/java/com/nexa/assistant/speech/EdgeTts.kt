@@ -282,7 +282,7 @@ class EdgeTts(
 
         internal fun mkSsml(voice: String, ratePercent: Int, pitchHz: Int, escapedText: String): String {
             fun signed(v: Int) = if (v >= 0) "+$v" else "$v"
-            return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
+            return "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='it-IT'>" +
                 "<voice name='${escapeXml(voice)}'>" +
                 "<prosody pitch='${signed(pitchHz)}Hz' rate='${signed(ratePercent)}%' volume='+0%'>" +
                 escapedText +

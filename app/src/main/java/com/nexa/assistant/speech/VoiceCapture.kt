@@ -24,19 +24,13 @@ class VoiceCapture(private val context: Context) {
         class Failed(val message: String) : Result
     }
 
-    private fun vadModelFile(): File {
-        val f = File(context.filesDir, "silero_vad.onnx")
-        if (!f.exists() || f.length() == 0L) {
-            context.assets.open("silero_vad.onnx").use { input -> f.outputStream().use { input.copyTo(it) } }
-        }
-        return f
-    }
 
     /**
      * @param isActive deve restare true per continuare ad ascoltare
      * @param onLevel volume (0..1) per animare la sfera
      * @param onSpeech chiamata circa ogni secondo mentre parli, con l'audio finora (per il testo parziale)
      * @param handoff registratore già attivo (passato dalla parola di attivazione) da cui continuare a leggere
+     * @param initial voce già registrata prima del passaggio (quando interrompi Memy parlando)
      */
     @SuppressLint("MissingPermission")
     fun record(
@@ -45,13 +39,14 @@ class VoiceCapture(private val context: Context) {
         onLevel: (Float) -> Unit,
         onSpeech: (FloatArray) -> Unit,
         handoff: AudioRecord? = null,
+        initial: FloatArray? = null,
     ): Result {
         val vad = try {
             Vad(
                 null,
                 VadModelConfig(
                     sileroVadModelConfig = SileroVadModelConfig(
-                        model = vadModelFile().absolutePath,
+                        model = vadModelFile(context).absolutePath,
                         threshold = 0.5f,
                         // Una pausa così lunga chiude la frase: abbastanza da non tagliarti mentre pensi.
                         minSilenceDuration = END_SILENCE_S,
@@ -98,6 +93,17 @@ class VoiceCapture(private val context: Context) {
                 return Result.Failed("microfono occupato da un'altra app")
             }
             onReady()
+            if (initial != null && initial.isNotEmpty()) {
+                // La frase è già iniziata: il rilevatore riparte da ciò che hai detto finora.
+                var i = 0
+                while (i + WINDOW <= initial.size) {
+                    vad.acceptWaveform(initial.copyOfRange(i, i + WINDOW))
+                    i += WINDOW
+                }
+                while (!vad.empty()) vad.pop()
+                speech.add(initial)
+                speaking = true
+            }
             while (isActive()) {
                 val n = record.read(shorts, 0, WINDOW)
                 if (n < 0) return Result.Failed("lettura del microfono non riuscita")
@@ -152,6 +158,16 @@ class VoiceCapture(private val context: Context) {
     }
 
     companion object {
+        /** Il modello Silero VAD, copiato una volta dagli asset dell'app. */
+        @Synchronized
+        fun vadModelFile(context: Context): File {
+            val f = File(context.filesDir, "silero_vad.onnx")
+            if (!f.exists() || f.length() == 0L) {
+                context.assets.open("silero_vad.onnx").use { input -> f.outputStream().use { input.copyTo(it) } }
+            }
+            return f
+        }
+
         const val SAMPLE_RATE = 16_000
         private const val WINDOW = 512
         private const val FRAME_MS = WINDOW * 1000 / SAMPLE_RATE

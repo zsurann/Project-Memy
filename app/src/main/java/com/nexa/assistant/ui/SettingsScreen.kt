@@ -257,6 +257,11 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                         "Dopo ogni risposta Memy torna ad ascoltarti, come in una vera chiacchierata.",
                         settings.continuousConversation, app.settings::setContinuous,
                     )
+                    SwitchRow(
+                        "Interrompila parlando",
+                        "Se inizi a parlare mentre Memy parla, lei si ferma e ti ascolta. Non serve aspettare che finisca.",
+                        settings.bargeIn, app.settings::setBargeIn,
+                    )
                     Text("Cosa ricorda Memy di te", style = MaterialTheme.typography.labelLarge, color = MemyColors.TextPrimary)
                     if (memories.isEmpty()) {
                         Hint("Ancora niente. Dille ad esempio: \"Ricordati che mia sorella si chiama Giulia\".")

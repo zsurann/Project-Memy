@@ -46,6 +46,8 @@ data class SettingsState(
     /** "Ehi Memy" sempre in ascolto, anche ad app chiusa. */
     val wakeWord: Boolean,
     val wakeSensitivity: WakeSensitivity,
+    /** Interrompere Memy parlando mentre lei parla. */
+    val bargeIn: Boolean,
 )
 
 class MemySettings(context: Context) {
@@ -83,6 +85,7 @@ class MemySettings(context: Context) {
         userName = prefs.getString(KEY_NAME, "") ?: "",
         wakeWord = prefs.getBoolean(KEY_WAKE, false),
         wakeSensitivity = enumPref(KEY_WAKE_SENS, WakeSensitivity.NORMAL),
+        bargeIn = prefs.getBoolean(KEY_BARGE, true),
     )
 
     private fun edit(block: SharedPreferences.Editor.() -> Unit) {
@@ -113,6 +116,7 @@ class MemySettings(context: Context) {
     fun setWebSearch(v: Boolean) = edit { putBoolean(KEY_WEB, v) }
     fun setAutoUpdate(v: Boolean) = edit { putBoolean(KEY_AUTO_UPDATE, v) }
     fun setUserName(v: String) = edit { putString(KEY_NAME, v.trim()) }
+    fun setBargeIn(v: Boolean) = edit { putBoolean(KEY_BARGE, v) }
     fun setWakeWord(v: Boolean) = edit { putBoolean(KEY_WAKE, v) }
     fun setWakeSensitivity(v: WakeSensitivity) = edit { putString(KEY_WAKE_SENS, v.name) }
 
@@ -134,6 +138,7 @@ class MemySettings(context: Context) {
         const val KEY_AUTO_UPDATE = "auto_update"
         const val KEY_NAME = "user_name"
         const val KEY_WAKE = "wake_word"
+        const val KEY_BARGE = "barge_in"
         const val KEY_WAKE_SENS = "wake_sensitivity"
         const val KEY_LAST_UPDATE_CHECK = "last_update_check"
     }
