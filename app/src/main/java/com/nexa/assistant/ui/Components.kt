@@ -93,9 +93,9 @@ fun AuroraBackground(modifier: Modifier = Modifier, intensity: Float = 1f, conte
                     radius = r, center = Offset(cx, cy),
                 )
             }
-            blob(MemyColors.Violet, w * (0.25f + 0.15f * sin(a)), h * (0.16f + 0.06f * cos(b)), w * 0.85f)
-            blob(MemyColors.Cyan, w * (0.88f + 0.1f * cos(a)), h * (0.46f + 0.08f * sin(b * 1.3f)), w * 0.7f)
-            blob(MemyColors.Pink, w * (0.30f + 0.2f * cos(b)), h * (0.95f + 0.04f * sin(a)), w * 0.75f)
+            blob(Color(0xFF6D3BFF), w * (0.28f + 0.14f * sin(a)), h * (0.20f + 0.06f * cos(b)), w * 0.95f)
+            blob(Color(0xFF00C2FF).copy(alpha = 0.7f), w * (0.82f + 0.1f * cos(a)), h * (0.40f + 0.08f * sin(b * 1.3f)), w * 0.75f)
+            blob(MemyColors.Pink.copy(alpha = 0.6f), w * (0.48f + 0.18f * cos(b)), h * (0.94f + 0.04f * sin(a)), w * 0.85f)
         }
         content()
     }
@@ -133,106 +133,85 @@ fun Modifier.pressable(enabled: Boolean = true, onClick: () -> Unit): Modifier {
         .clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
 }
 
-private data class OrbPalette(val a: Color, val b: Color, val c: Color)
-
-private fun paletteFor(phase: Phase) = when (phase) {
-    Phase.IDLE -> OrbPalette(MemyColors.Violet, MemyColors.Indigo, MemyColors.Cyan)
-    Phase.LISTENING, Phase.CONFIRMING -> OrbPalette(MemyColors.Cyan, MemyColors.Mint, MemyColors.Indigo)
-    Phase.PROCESSING, Phase.THINKING -> OrbPalette(MemyColors.Pink, MemyColors.Violet, MemyColors.Indigo)
-    Phase.SPEAKING -> OrbPalette(MemyColors.Violet, MemyColors.Cyan, MemyColors.Pink)
-}
-
 /**
- * La sfera di Memy: una forma liquida che respira, si deforma con la voce e cambia colore con lo stato.
+ * La sfera di Memy: un nucleo di luce colorata che respira.
+ * - a riposo ruota lentamente;
+ * - in ascolto si allarga con la tua voce;
+ * - mentre pensa i colori girano più in fretta e tre punti le orbitano attorno;
+ * - mentre parla manda onde verso l'esterno.
  * Tutto il disegno (alone e onde compresi) resta dentro il riquadro [size].
  */
 @Composable
 fun MemyOrb(phase: Phase, level: Float, size: Dp, modifier: Modifier = Modifier) {
-    val pal = paletteFor(phase)
-    val ca by animateColorAsState(pal.a, tween(700), label = "ca")
-    val cb by animateColorAsState(pal.b, tween(700), label = "cb")
-    val cc by animateColorAsState(pal.c, tween(700), label = "cc")
     val lvl by animateFloatAsState(level, spring(stiffness = 300f), label = "lvl")
-    val energy by animateFloatAsState(if (phase != Phase.IDLE) 1f else 0.35f, tween(600), label = "energy")
-    val thinking = phase == Phase.THINKING || phase == Phase.PROCESSING
-    val listening = phase == Phase.LISTENING || phase == Phase.CONFIRMING
-    val ringAlpha by animateFloatAsState(if (thinking) 1f else 0f, tween(400), label = "ring")
-    val waveAlpha by animateFloatAsState(if (listening) 1f else 0f, tween(400), label = "wave")
+    val listening by animateFloatAsState(if (phase == Phase.LISTENING || phase == Phase.CONFIRMING) 1f else 0f, tween(500), label = "listening")
+    val thinking by animateFloatAsState(if (phase == Phase.THINKING || phase == Phase.PROCESSING) 1f else 0f, tween(500), label = "thinking")
+    val speaking by animateFloatAsState(if (phase == Phase.SPEAKING) 1f else 0f, tween(500), label = "speaking")
 
     val t = rememberInfiniteTransition(label = "orb")
-    val time by t.animateFloat(0f, (2 * PI).toFloat(), infiniteRepeatable(tween(9_000, easing = LinearEasing)), label = "time")
-    val spin by t.animateFloat(0f, 360f, infiniteRepeatable(tween(12_000, easing = LinearEasing)), label = "spin")
-    val fastSpin by t.animateFloat(0f, 360f, infiniteRepeatable(tween(1_300, easing = LinearEasing)), label = "fast")
-    val breathe by t.animateFloat(0.97f, 1.03f, infiniteRepeatable(tween(2_600, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "breathe")
+    // Periodi diversi e senza scatti: ogni valore torna esattamente al punto di partenza.
+    val slow by t.animateFloat(0f, (2 * PI).toFloat(), infiniteRepeatable(tween(14_000, easing = LinearEasing)), label = "slow")
+    val fast by t.animateFloat(0f, (2 * PI).toFloat(), infiniteRepeatable(tween(2_400, easing = LinearEasing)), label = "fast")
+    val ripple by t.animateFloat(0f, 1f, infiniteRepeatable(tween(1_900, easing = LinearEasing)), label = "ripple")
+    val breathe by t.animateFloat(-1f, 1f, infiniteRepeatable(tween(2_600, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "breathe")
 
     Canvas(modifier.size(size)) {
         val center = Offset(this.size.width / 2, this.size.height / 2)
         val half = this.size.minDimension / 2f
-        val base = half * 0.56f * breathe * (1f + lvl * 0.14f)
+        val r = half * (0.46f + 0.012f * breathe + lvl * (0.085f * listening + 0.045f * speaking))
+
+        // Onde verso l'esterno mentre parla
+        if (speaking > 0.01f) {
+            for (k in 0..2) {
+                val p = (ripple + k / 3f) % 1f
+                drawCircle(
+                    Color(0xFF8CAAFF).copy(alpha = (1f - p) * 0.38f * speaking),
+                    radius = r + p * (half - r) * 0.96f, center = center,
+                    style = Stroke(width = 1.4.dp.toPx()),
+                )
+            }
+        }
 
         // Alone
         drawCircle(
             Brush.radialGradient(
-                0f to ca.copy(alpha = 0.38f * energy + lvl * 0.22f),
-                0.6f to cb.copy(alpha = 0.10f + lvl * 0.08f),
+                0f to MemyColors.Violet.copy(alpha = 0.55f + 0.2f * lvl),
+                0.45f to Color(0xFF7C4DFF).copy(alpha = 0.22f),
                 1f to Color.Transparent,
                 center = center, radius = half,
             ),
             radius = half, center = center,
         )
 
-        // Onde concentriche mentre ascolta
-        if (waveAlpha > 0.01f) {
-            for (k in 0..2) {
-                val p = ((time / (2 * PI.toFloat())) * 3f + k / 3f) % 1f
+        // Nucleo: macchie di colore che ruotano e si sommano come luce
+        val body = Path().apply { addOval(androidx.compose.ui.geometry.Rect(center, r)) }
+        clipPath(body) {
+            drawCircle(Color(0xFF1B1446), r, center)
+            val colors = listOf(MemyColors.Violet, MemyColors.Cyan, MemyColors.Pink, MemyColors.Indigo)
+            colors.forEachIndexed { i, color ->
+                // Mentre pensa la rotazione accelera in modo continuo (somma di due angoli, nessuno scatto).
+                val angle = slow * (1 + i) + fast * thinking + i * 1.7f
+                val c = Offset(center.x + cos(angle) * r * 0.36f, center.y + sin(slow * (2 + i) + fast * thinking + i * 2.3f) * r * 0.36f)
                 drawCircle(
-                    ca.copy(alpha = (1f - p) * 0.38f * waveAlpha),
-                    radius = base * (1.12f + p * 0.58f), center = center,
-                    style = Stroke(width = 1.6.dp.toPx()),
+                    Brush.radialGradient(listOf(color.copy(alpha = 0.6f), color.copy(alpha = 0f)), c, r * 1.05f),
+                    r * 1.05f, c, blendMode = androidx.compose.ui.graphics.BlendMode.Plus,
                 )
             }
+            // Riflesso in alto a sinistra e bordo più scuro, per dare volume
+            val hl = Offset(center.x - r * 0.35f, center.y - r * 0.4f)
+            drawCircle(Brush.radialGradient(listOf(Color.White.copy(alpha = 0.3f), Color.Transparent), hl, r * 0.9f), r * 0.9f, hl)
+            drawCircle(Brush.radialGradient(0.7f to Color.Transparent, 1f to Color(0xFF07071A).copy(alpha = 0.35f), center = center, radius = r), r, center)
         }
+        drawCircle(Color.White.copy(alpha = 0.16f), r, center, style = Stroke(width = 1.dp.toPx()))
 
-        // Forma liquida
-        val path = Path()
-        val points = 96
-        val amp = 0.03f + 0.045f * energy + lvl * 0.13f
-        for (i in 0..points) {
-            val th = (i.toFloat() / points) * 2f * PI.toFloat()
-            val wobble = sin(3 * th + time * 2f) * 0.5f + sin(5 * th - time * 3f) * 0.3f + sin(2 * th + time) * 0.4f
-            val r = base * (1f + amp * wobble)
-            val x = center.x + r * cos(th)
-            val y = center.y + r * sin(th)
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        path.close()
-
-        drawPath(path, Brush.radialGradient(listOf(cb, ca), center, base * 1.2f))
-        clipPath(path) {
-            fun blob(color: Color, angle: Float, dist: Float, r: Float) {
-                val c = Offset(center.x + cos(angle) * base * dist, center.y + sin(angle) * base * dist)
-                drawCircle(Brush.radialGradient(listOf(color.copy(alpha = 0.95f), color.copy(alpha = 0f)), c, base * r), base * r, c)
-            }
-            val sp = spin * (PI.toFloat() / 180f)
-            blob(cc, sp + time, 0.55f, 1.0f)
-            blob(ca, -sp * 0.7f + 2.1f, 0.6f, 0.95f)
-            blob(MemyColors.Pink.copy(alpha = 0.7f), time * 1.5f + 4.2f, 0.65f, 0.75f * (0.6f + energy * 0.4f))
-            // Riflesso e ombra, per dare volume
-            val hl = Offset(center.x - base * 0.35f, center.y - base * 0.45f)
-            drawCircle(Brush.radialGradient(listOf(Color.White.copy(alpha = 0.45f), Color.Transparent), hl, base * 0.75f), base * 0.75f, hl)
-            drawCircle(Brush.radialGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.28f)), center, base * 1.25f), base * 1.3f, center)
-        }
-        drawPath(path, Color.White.copy(alpha = 0.18f), style = Stroke(width = 1.2.dp.toPx()))
-
-        // Anello che gira mentre pensa
-        if (ringAlpha > 0.01f) {
-            val r = base * 1.3f
-            rotate(fastSpin, center) {
-                drawArc(
-                    Brush.sweepGradient(listOf(Color.Transparent, cc.copy(alpha = ringAlpha), Color.White.copy(alpha = ringAlpha)), center),
-                    startAngle = 0f, sweepAngle = 120f, useCenter = false,
-                    topLeft = Offset(center.x - r, center.y - r), size = Size(r * 2, r * 2),
-                    style = Stroke(width = base * 0.055f, cap = StrokeCap.Round),
+        // Tre punti in orbita mentre pensa
+        if (thinking > 0.01f) {
+            val orbit = minOf(r * 1.32f, half * 0.94f)
+            for (i in 0..2) {
+                val a = fast + i * (2 * PI.toFloat() / 3f)
+                drawCircle(
+                    Color.White.copy(alpha = 0.9f * thinking), radius = half * 0.022f,
+                    center = Offset(center.x + cos(a) * orbit, center.y + sin(a) * orbit),
                 )
             }
         }

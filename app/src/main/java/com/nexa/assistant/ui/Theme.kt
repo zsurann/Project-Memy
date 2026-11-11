@@ -12,23 +12,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 object MemyColors {
-    val Background = Color(0xFF05060D)
-    val BackgroundTop = Color(0xFF0A0B1E)
-    val Glass = Color(0x14FFFFFF)
-    val GlassStrong = Color(0x22FFFFFF)
-    val GlassBorder = Color(0x1FFFFFFF)
+    val Background = Color(0xFF07071A)
+    val BackgroundTop = Color(0xFF0B0A26)
+    val Glass = Color(0x0FFFFFFF)
+    val GlassStrong = Color(0x1AFFFFFF)
+    val GlassBorder = Color(0x1CFFFFFF)
     val Violet = Color(0xFF8B5CF6)
     val Indigo = Color(0xFF6366F1)
     val Cyan = Color(0xFF22D3EE)
-    val Pink = Color(0xFFEC4899)
+    val Pink = Color(0xFFFF4FD8)
     val Mint = Color(0xFF34D399)
     val Amber = Color(0xFFFBBF24)
-    val TextPrimary = Color(0xFFF5F6FF)
-    val TextSecondary = Color(0xFFA3A8C3)
+    val TextPrimary = Color(0xFFF2F1FF)
+    val TextSecondary = Color(0xFFA09FC4)
     val TextTertiary = Color(0xFF6B7090)
 
-    val AccentGradient = Brush.linearGradient(listOf(Violet, Indigo, Cyan))
-    val UserBubble = Brush.linearGradient(listOf(Color(0xFF7C3AED), Color(0xFF4F46E5)))
+    val AccentGradient = Brush.linearGradient(listOf(Violet, Cyan))
+    val UserBubble = Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFF3AA0FF)))
 }
 
 private val Sans = FontFamily.SansSerif
