@@ -23,15 +23,17 @@ class SystemSpeechToText(private val context: Context, private val googleOnly: B
     fun services(): List<ComponentName> =
         context.packageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)
             .map { ComponentName(it.serviceInfo.packageName, it.serviceInfo.name) }
+            // Memy stessa offre un servizio di riconoscimento (serve per fare da assistente): qui non conta.
+            .filter { it.packageName != context.packageName }
 
     fun googleComponent(): ComponentName? = services().firstOrNull { it.packageName in GOOGLE_PACKAGES }
 
     override fun isReady(): Boolean =
-        if (googleOnly) googleComponent() != null else SpeechRecognizer.isRecognitionAvailable(context)
+        if (googleOnly) googleComponent() != null else services().isNotEmpty()
 
     override fun start(listener: SpeechToText.Listener) {
         stop()
-        val component = googleComponent()
+        val component = googleComponent() ?: services().firstOrNull().takeIf { !googleOnly }
         if (googleOnly && component == null) {
             listener.onError("Il riconoscimento vocale di Google non è installato su questo telefono.")
             return

@@ -30,7 +30,10 @@ class CaptureSpeechToText(
 
     override fun isReady(): Boolean = ready()
 
-    override fun start(listener: SpeechToText.Listener) {
+    override fun start(listener: SpeechToText.Listener) = start(listener, null)
+
+    /** @param handoff registratore già attivo da cui continuare (vedi [WakeWordDetector]); viene rilasciato qui. */
+    fun start(listener: SpeechToText.Listener, handoff: android.media.AudioRecord?) {
         stop()
         val id = ++session
         fun post(block: () -> Unit) = main.post { if (session == id) block() }
@@ -54,6 +57,7 @@ class CaptureSpeechToText(
                         }
                     }
                 },
+                handoff = handoff,
             )
             when (result) {
                 is VoiceCapture.Result.Speech -> {

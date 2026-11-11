@@ -94,9 +94,9 @@ class MemySessionService : Service() {
         fun start(context: Context, text: String): Boolean {
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return false
             return runCatching {
-                ContextCompat.startForegroundService(
-                    context, Intent(context, MemySessionService::class.java).putExtra(EXTRA_TEXT, text),
-                )
+                // startService (e non startForegroundService): se poi Android rifiuta il primo piano,
+                // il servizio si chiude senza mandare in errore l'app.
+                context.startService(Intent(context, MemySessionService::class.java).putExtra(EXTRA_TEXT, text))
                 true
             }.getOrDefault(false)
         }

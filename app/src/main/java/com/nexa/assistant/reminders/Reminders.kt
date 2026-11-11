@@ -78,10 +78,13 @@ class ReminderStore(private val context: Context) {
     }
 }
 
-/** Dopo un riavvio del telefono riprogramma i promemoria. */
+/** Dopo un riavvio del telefono o un aggiornamento di Memy: riprogramma i promemoria e riattiva "Ehi Memy". */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED) ReminderStore(context).rescheduleAll()
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
+        ReminderStore(context).rescheduleAll()
+        // Riattiva "Ehi Memy"; se Android non lo permette da qui, compare una notifica per farlo con un tocco.
+        com.nexa.assistant.MemyWakeService.sync(context)
     }
 }
 

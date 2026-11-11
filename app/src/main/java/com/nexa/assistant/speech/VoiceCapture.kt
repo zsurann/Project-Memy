@@ -36,6 +36,7 @@ class VoiceCapture(private val context: Context) {
      * @param isActive deve restare true per continuare ad ascoltare
      * @param onLevel volume (0..1) per animare la sfera
      * @param onSpeech chiamata circa ogni secondo mentre parli, con l'audio finora (per il testo parziale)
+     * @param handoff registratore già attivo (passato dalla parola di attivazione) da cui continuare a leggere
      */
     @SuppressLint("MissingPermission")
     fun record(
@@ -43,6 +44,7 @@ class VoiceCapture(private val context: Context) {
         onReady: () -> Unit,
         onLevel: (Float) -> Unit,
         onSpeech: (FloatArray) -> Unit,
+        handoff: AudioRecord? = null,
     ): Result {
         val vad = try {
             Vad(
@@ -62,11 +64,12 @@ class VoiceCapture(private val context: Context) {
                 ),
             )
         } catch (e: Throwable) {
+            handoff?.release()
             return Result.Failed("rilevamento della voce non disponibile: ${e.message}")
         }
 
         val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val record = try {
+        val record = handoff ?: try {
             // VOICE_RECOGNITION: audio pensato per il riconoscimento vocale, senza effetti che lo distorcono.
             AudioRecord(
                 MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE,
@@ -90,11 +93,15 @@ class VoiceCapture(private val context: Context) {
         var sinceSnapshotMs = 0
 
         try {
-            record.startRecording()
+            if (handoff == null) record.startRecording()
+            if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                return Result.Failed("microfono occupato da un'altra app")
+            }
             onReady()
             while (isActive()) {
                 val n = record.read(shorts, 0, WINDOW)
-                if (n <= 0) continue
+                if (n < 0) return Result.Failed("lettura del microfono non riuscita")
+                if (n == 0) continue
                 val frame = FloatArray(n)
                 var sum = 0.0
                 for (i in 0 until n) {

@@ -100,7 +100,7 @@ class ScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [35], qualifiers = "w411dp-h4300dp-xxhdpi")
+    @Config(sdk = [35], qualifiers = "w411dp-h4900dp-xxhdpi")
     fun settingsExpanded() {
         pretendKeys()
         app.memory.add("La sorella di Genny si chiama Giulia")
@@ -115,6 +115,7 @@ class ScreenshotTest {
             previewingId = "it-IT-DiegoNeural",
         )
         app.settings.setVoiceRate(10)
+        app.settings.setWakeWord(true)
         previewExpandAllSections = true
         try {
             shot("settings-full") { SettingsScreen(app) {} }

@@ -62,7 +62,11 @@ class UpdateManager(private val context: Context, private val settings: MemySett
     private fun isMetered(): Boolean =
         context.getSystemService(android.net.ConnectivityManager::class.java)?.isActiveNetworkMetered ?: true
 
+    private fun busy() = _state.value.let { it is State.Downloading || it is State.Installing }
+
     suspend fun check(): Release? = withContext(Dispatchers.IO) {
+        // Un download già in corso non va interrotto né fatto ripartire.
+        if (busy()) return@withContext null
         _state.value = State.Checking
         var lastError = "nessuna risposta"
         for (base in BuildConfig.UPDATE_BASE_URLS.split(',')) {
@@ -93,10 +97,12 @@ class UpdateManager(private val context: Context, private val settings: MemySett
     }
 
     suspend fun downloadAndInstall(rel: Release) {
+        if (busy()) return
         if (!context.packageManager.canRequestPackageInstalls()) {
             _state.value = State.NeedsPermission(rel)
             return
         }
+        _state.value = State.Downloading(rel, 0f)
         val apk = withContext(Dispatchers.IO) {
             try {
                 download(rel)

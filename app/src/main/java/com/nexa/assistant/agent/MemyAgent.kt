@@ -33,6 +33,8 @@ import com.nexa.assistant.tools.ToolResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.time.ZoneId
 import java.util.Base64
@@ -80,6 +82,8 @@ class MemyAgent(
     /** Cronologia della conversazione. Si aggiunge solo in coda (mai modificata a metà). */
     private val history = mutableListOf<MessageParam>()
     private var lastActivity = 0L
+    /** Una richiesta alla volta: una nuova aspetta che quella annullata abbia rimesso in ordine la cronologia. */
+    private val turn = Mutex()
 
     private val toolDefs: List<Tool> by lazy { tools.map(::toApiTool) }
 
@@ -88,6 +92,10 @@ class MemyAgent(
     }
 
     suspend fun run(userText: String, options: Options): String = withContext(Dispatchers.IO) {
+        turn.withLock { runTurn(userText, options) }
+    }
+
+    private suspend fun runTurn(userText: String, options: Options): String {
         val now = System.currentTimeMillis()
         if (now - lastActivity > CONVERSATION_TIMEOUT_MS || history.size > MAX_HISTORY) history.clear()
         lastActivity = now
@@ -110,7 +118,7 @@ class MemyAgent(
                         history.clear()
                         val msg = "Mi dispiace, su questo non posso aiutarti."
                         hooks.onSentence(msg)
-                        return@withContext msg
+                        return msg
                     }
                     else -> {
                         lastActivity = System.currentTimeMillis()
@@ -118,13 +126,13 @@ class MemyAgent(
                         if (text.isEmpty()) {
                             val msg = "Ecco fatto."
                             hooks.onSentence(msg)
-                            return@withContext msg
+                            return msg
                         }
-                        return@withContext text
+                        return text
                     }
                 }
             }
-            "Ho fatto molti passaggi senza riuscire a finire. Dimmi come preferisci che continui.".also { hooks.onSentence(it) }
+            return "Ho fatto molti passaggi senza riuscire a finire. Dimmi come preferisci che continui.".also { hooks.onSentence(it) }
         } catch (e: AnthropicServiceException) {
             rollback(checkpoint)
             throw AgentException(describe(e))
@@ -138,6 +146,7 @@ class MemyAgent(
         } catch (e: Exception) {
             // Qualsiasi altro imprevisto: la cronologia torna valida, così la conversazione può continuare.
             rollback(checkpoint)
+            if (job?.isActive == false) throw CancellationException("annullato")
             throw AgentException("Si è verificato un errore imprevisto: ${e.message}")
         }
     }
@@ -148,6 +157,9 @@ class MemyAgent(
         val splitter = SentenceSplitter { hooks.onSentence(it) }
         if (spoken.isNotEmpty()) spoken.append(' ')
         api.messages().createStreaming(params).use { stream ->
+            // Se l'utente interrompe, la connessione si chiude subito invece di aspettare il prossimo dato.
+            val onCancel = job?.invokeOnCompletion { runCatching { stream.close() } }
+            try {
             val iterator = stream.stream().iterator()
             while (iterator.hasNext()) {
                 if (job?.isActive == false) throw CancellationException("annullato")
@@ -164,7 +176,11 @@ class MemyAgent(
                     }
                 }
             }
+            } finally {
+                onCancel?.dispose()
+            }
         }
+        if (job?.isActive == false) throw CancellationException("annullato")
         splitter.flush()
         return accumulator.message()
     }

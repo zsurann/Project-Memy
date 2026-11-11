@@ -39,6 +39,8 @@ class MemyAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        // Il sistema avvia questo servizio da solo (anche dopo un riavvio): da qui si riattiva "Ehi Memy".
+        com.nexa.assistant.MemyWakeService.sync(this)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {

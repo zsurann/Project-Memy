@@ -33,6 +33,7 @@ class MainActivity : ComponentActivity() {
 
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted && listenWhenGranted) app.controller.startListening()
+        if (granted) MemyWakeService.sync(this)
         listenWhenGranted = false
     }
 
@@ -70,6 +71,8 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         app.controller.inForeground = true
+        // Con l'app visibile Android permette di (ri)avviare l'ascolto di "Ehi Memy".
+        MemyWakeService.sync(this)
     }
 
     override fun onStop() {

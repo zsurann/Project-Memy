@@ -2,6 +2,7 @@ package com.nexa.assistant.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.nexa.assistant.speech.WakeSensitivity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -42,6 +43,9 @@ data class SettingsState(
     val webSearch: Boolean,
     val autoUpdate: Boolean,
     val userName: String,
+    /** "Ehi Memy" sempre in ascolto, anche ad app chiusa. */
+    val wakeWord: Boolean,
+    val wakeSensitivity: WakeSensitivity,
 )
 
 class MemySettings(context: Context) {
@@ -77,6 +81,8 @@ class MemySettings(context: Context) {
         webSearch = prefs.getBoolean(KEY_WEB, true),
         autoUpdate = prefs.getBoolean(KEY_AUTO_UPDATE, true),
         userName = prefs.getString(KEY_NAME, "") ?: "",
+        wakeWord = prefs.getBoolean(KEY_WAKE, false),
+        wakeSensitivity = enumPref(KEY_WAKE_SENS, WakeSensitivity.NORMAL),
     )
 
     private fun edit(block: SharedPreferences.Editor.() -> Unit) {
@@ -107,6 +113,8 @@ class MemySettings(context: Context) {
     fun setWebSearch(v: Boolean) = edit { putBoolean(KEY_WEB, v) }
     fun setAutoUpdate(v: Boolean) = edit { putBoolean(KEY_AUTO_UPDATE, v) }
     fun setUserName(v: String) = edit { putString(KEY_NAME, v.trim()) }
+    fun setWakeWord(v: Boolean) = edit { putBoolean(KEY_WAKE, v) }
+    fun setWakeSensitivity(v: WakeSensitivity) = edit { putString(KEY_WAKE_SENS, v.name) }
 
     var lastUpdateCheck: Long
         get() = prefs.getLong(KEY_LAST_UPDATE_CHECK, 0L)
@@ -125,6 +133,8 @@ class MemySettings(context: Context) {
         const val KEY_WEB = "web_search"
         const val KEY_AUTO_UPDATE = "auto_update"
         const val KEY_NAME = "user_name"
+        const val KEY_WAKE = "wake_word"
+        const val KEY_WAKE_SENS = "wake_sensitivity"
         const val KEY_LAST_UPDATE_CHECK = "last_update_check"
     }
 }

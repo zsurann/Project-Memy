@@ -12,6 +12,7 @@ import com.nexa.assistant.speech.VoicePlayer
 import com.nexa.assistant.speech.ParakeetModel
 import com.nexa.assistant.speech.CaptureSpeechToText
 import com.nexa.assistant.speech.GroqWhisper
+import com.nexa.assistant.speech.WakeWord
 import com.nexa.assistant.tools.basicTools
 import com.nexa.assistant.tools.dataTools
 import com.nexa.assistant.tools.notificationTools
@@ -75,6 +76,18 @@ class MemyController(private val app: MemyApp) {
         app, "Whisper", asrModel, ready = { !settings.groqKey().isNullOrBlank() },
     ) { samples -> groq.transcribe(samples, settings.groqKey().orEmpty(), whisperPrompt()) }
     private val parakeet = CaptureSpeechToText(app, "Parakeet", asrModel, ready = { asrModel.isInstalled() }, finalTranscriber = null)
+
+    /** Il microfono è usato dal servizio di dettatura ([MemyRecognitionService]): la parola di attivazione aspetta. */
+    val dictating = MutableStateFlow(false)
+
+    /** Un motore di ascolto a parte per la dettatura nelle altre app, o null se non ce n'è uno pronto. */
+    fun newDictationEngine(): SpeechToText? = when {
+        whisper.isReady() -> CaptureSpeechToText(app, "Whisper", asrModel, ready = { true }) { samples ->
+            groq.transcribe(samples, settings.groqKey().orEmpty(), GroqWhisper.DEFAULT_PROMPT)
+        }
+        parakeet.isReady() -> CaptureSpeechToText(app, "Parakeet", asrModel, ready = { true }, finalTranscriber = null)
+        else -> null
+    }
     val googleDevice = SystemSpeechToText(app, googleOnly = true)
     private val anySystem = SystemSpeechToText(app, googleOnly = false)
     private var activeStt: SpeechToText? = null
@@ -98,6 +111,8 @@ class MemyController(private val app: MemyApp) {
         }
 
     private var job: Job? = null
+    /** Numero della richiesta in corso: una richiesta annullata non deve toccare lo stato di quella nuova. */
+    private var runSeq = 0
     /** Claude sta ancora lavorando (a differenza di [job], che resta attivo finché Memy finisce di parlare). */
     private var agentBusy = false
     private var confirmation: CompletableDeferred<Boolean>? = null
@@ -141,6 +156,7 @@ class MemyController(private val app: MemyApp) {
         scope.launch {
             _state.map { it.phase }.distinctUntilChanged().collect { phase ->
                 updateOverlay()
+                duckMusic(phase == Phase.LISTENING || phase == Phase.CONFIRMING)
                 MemySessionService.update(app, sessionText(phase))
                 sessionEndJob?.cancel()
                 if (phase == Phase.IDLE && !agentBusy) {
@@ -156,6 +172,25 @@ class MemyController(private val app: MemyApp) {
         // Carica in anticipo il modello di ascolto e libera lo spazio del vecchio modello Vosk (non più usato).
         asrModel.warmUp()
         scope.launch(Dispatchers.IO) { java.io.File(app.filesDir, "vosk-model-it").deleteRecursively() }
+    }
+
+    private var listenFocus: android.media.AudioFocusRequest? = null
+
+    /** Mentre Memy ti ascolta, la musica delle altre app si abbassa: così ti capisce meglio. */
+    private fun duckMusic(on: Boolean) {
+        val audio = app.getSystemService(android.media.AudioManager::class.java) ?: return
+        if (on == (listenFocus != null)) return
+        if (on) {
+            listenFocus = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                .setAudioAttributes(
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_ASSISTANT)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build()
+                ).build().also { runCatching { audio.requestAudioFocus(it) } }
+        } else {
+            listenFocus?.let { runCatching { audio.abandonAudioFocusRequest(it) } }
+            listenFocus = null
+        }
     }
 
     fun hasMicPermission() =
@@ -179,12 +214,16 @@ class MemyController(private val app: MemyApp) {
      * Memy può usare il microfono: con l'app aperta sempre; fuori dall'app solo durante una conversazione,
      * grazie al servizio in primo piano avviato quando l'app era visibile.
      */
-    private fun canListen() = hasMicPermission() && (inForeground || MemySessionService.running)
+    private fun canListen() =
+        hasMicPermission() && (inForeground || MemySessionService.running || MemyWakeService.running)
 
     /** Avvia la "sessione" che tiene vivo il microfono quando Memy lavora in un'altra app. */
     private fun ensureSession() {
         sessionEndJob?.cancel()
-        if (!MemySessionService.running && inForeground) MemySessionService.start(app, sessionText(_state.value.phase))
+        // Con "Ehi Memy" attiva il microfono in background è già garantito dal suo servizio.
+        if (!MemySessionService.running && !MemyWakeService.running && inForeground) {
+            MemySessionService.start(app, sessionText(_state.value.phase))
+        }
     }
 
     private fun sessionText(phase: Phase) = when (phase) {
@@ -210,15 +249,48 @@ class MemyController(private val app: MemyApp) {
         }
     }
 
-    fun startListening() {
-        val stt = readyOrExplain() ?: return
+    /**
+     * Qualcuno ha detto "Ehi Memy" (vedi [MemyWakeService]). [recorder] è il registratore ancora attivo:
+     * Memy continua ad ascoltare da lì, così capisce anche "Ehi Memy, che ore sono?" detto tutto d'un fiato.
+     * @return false se non può ascoltare adesso
+     */
+    fun onWakeWord(recorder: android.media.AudioRecord): Boolean {
+        if (_state.value.phase != Phase.IDLE || dictating.value) {
+            recorder.release()
+            return false
+        }
+        chime()
+        return startListening(recorder)
+    }
+
+    /** Breve segnale: Memy ti ha sentito e sta ascoltando. */
+    private fun chime() {
+        scope.launch(Dispatchers.Default) {
+            runCatching {
+                val tone = android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 55)
+                tone.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 120)
+                delay(300)
+                tone.release()
+            }
+        }
+        runCatching {
+            app.getSystemService(android.os.Vibrator::class.java)
+                ?.vibrate(android.os.VibrationEffect.createOneShot(40, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+        }
+    }
+
+    fun startListening(handoff: android.media.AudioRecord? = null): Boolean {
+        val stt = readyOrExplain() ?: run {
+            handoff?.release()
+            return false
+        }
         ensureSession()
         voice.stop()
         voice.stopPreview()
         stopStt()
         activeStt = stt
         _state.update { it.copy(phase = Phase.LISTENING, partial = "", listenerName = stt.name) }
-        stt.start(object : SpeechToText.Listener {
+        val listener = object : SpeechToText.Listener {
             override fun onLevel(level: Float) {
                 _level.value = _level.value * 0.4f + level * 0.6f
             }
@@ -237,7 +309,13 @@ class MemyController(private val app: MemyApp) {
                 if (activeStt !== stt) return
                 activeStt = null
                 _state.update { it.copy(partial = "") }
-                if (text.isBlank()) _state.update { it.copy(phase = Phase.IDLE) } else submit(text)
+                val command = WakeWord.strip(text)
+                when {
+                    text.isBlank() -> _state.update { it.copy(phase = Phase.IDLE) }
+                    // Hai detto solo "Ehi Memy": resta in ascolto del comando.
+                    command.isBlank() -> if (!startListening()) _state.update { it.copy(phase = Phase.IDLE) }
+                    else -> submit(command)
+                }
             }
 
             override fun onError(message: String) {
@@ -246,7 +324,14 @@ class MemyController(private val app: MemyApp) {
                 notice(message)
                 _state.update { it.copy(phase = Phase.IDLE, partial = "") }
             }
-        })
+        }
+        if (stt is CaptureSpeechToText) {
+            stt.start(listener, handoff)
+        } else {
+            handoff?.release()
+            stt.start(listener)
+        }
+        return true
     }
 
     private fun stopStt() {
@@ -294,6 +379,7 @@ class MemyController(private val app: MemyApp) {
         addLine(ChatLine(ids.incrementAndGet(), fromUser = true, text = clean))
         addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = "", streaming = true))
         agentBusy = true
+        val runId = ++runSeq
         job = scope.launch {
             _state.update { it.copy(phase = Phase.THINKING, partial = "") }
             val s = settings.state.value
@@ -302,7 +388,10 @@ class MemyController(private val app: MemyApp) {
             } catch (e: MemyAgent.AgentException) {
                 (e.message ?: "Si è verificato un errore.").also { voice.enqueue(it) }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                agentBusy = false; finishStreamingLine(); updateOverlay(); throw e
+                if (runSeq == runId) {
+                    agentBusy = false; finishStreamingLine(); updateOverlay()
+                }
+                throw e
             } catch (e: Exception) {
                 "Si è verificato un errore imprevisto: ${e.message}".also { voice.enqueue(it) }
             }

@@ -1,0 +1,7 @@
+EY1 M EH1 M IY0 @ehi_memy
+EY1 M EH1 M IY1 @ehi_memy
+EY1 M EY1 M IY0 @ehi_memy
+EH1 IY0 M EH1 M IY0 @ehi_memy
+EH1 Y M EH1 M IY0 @ehi_memy
+EY1 M EH1 M IH0 @ehi_memy
+AY1 M EH1 M IY0 @ehi_memy

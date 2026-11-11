@@ -59,7 +59,7 @@ class GroqWhisper(private val baseUrl: String = "https://api.groq.com/openai/v1"
 
         /** Esempio di stile in italiano, con i nomi che Memy sente spesso. */
         const val DEFAULT_PROMPT =
-            "Ciao Memy. Apri WhatsApp e scrivi a Marco che arrivo tra dieci minuti. " +
+            "Ehi Memy, apri WhatsApp e scrivi a Marco che arrivo tra dieci minuti. " +
                 "Imposta una sveglia alle sette. Leggimi le notifiche di Telegram e Instagram."
 
         /** Frasi che Whisper a volte "inventa" quando l'audio è quasi muto. */

@@ -62,8 +62,9 @@ class ParakeetModel(private val context: Context) {
     /** Trascrive un audio (16 kHz, valori tra -1 e 1). Bloccante. */
     fun transcribe(samples: FloatArray): String {
         if (samples.isEmpty()) return ""
-        val rec = recognizer()
+        // Tutto sotto lo stesso blocco: il modello non può essere eliminato mentre lo si usa.
         synchronized(lock) {
+            val rec = recognizer()
             val stream = rec.createStream()
             try {
                 stream.acceptWaveform(samples, SAMPLE_RATE)

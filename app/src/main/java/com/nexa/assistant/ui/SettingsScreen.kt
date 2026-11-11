@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -91,12 +92,15 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nexa.assistant.AssistantRole
 import com.nexa.assistant.MemyApp
+import com.nexa.assistant.MemyWakeService
 import com.nexa.assistant.access.Capabilities
 import com.nexa.assistant.data.ClaudeModel
 import com.nexa.assistant.data.SttEngine
 import com.nexa.assistant.speech.EdgeVoice
 import com.nexa.assistant.speech.VoicePlayer
+import com.nexa.assistant.speech.WakeSensitivity
 import com.nexa.assistant.update.UpdateManager
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -268,6 +272,8 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                         }
                     }
                 }
+
+                WakeSection(app, context, tick)
 
                 // ------------------------------------------------ OriginOS
                 SectionCard(
@@ -470,6 +476,80 @@ private fun VoiceRow(
 // ---------------------------------------------------------------- poteri
 
 @OptIn(ExperimentalLayoutApi::class)
+/** "Ehi Memy" sempre in ascolto e Memy come assistente predefinito del telefono. */
+@Composable
+private fun WakeSection(app: MemyApp, context: Context, tick: Int) {
+    val settings by app.settings.state.collectAsStateWithLifecycle()
+    val isAssistant = remember(tick) { AssistantRole.isHeld(context) }
+    val enable = {
+        app.settings.setWakeWord(true)
+        MemyWakeService.sync(context)
+    }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if (result[Manifest.permission.RECORD_AUDIO] == true || context.granted(Manifest.permission.RECORD_AUDIO)) enable()
+    }
+    SectionCard(
+        Icons.Filled.RecordVoiceOver, "Ehi Memy",
+        when {
+            settings.wakeWord && isAssistant -> "Sempre in ascolto · assistente del telefono ✓"
+            settings.wakeWord -> "Sempre in ascolto ✓"
+            else -> "Chiamala a voce, anche ad app chiusa"
+        },
+    ) {
+        SwitchRow(
+            "«Ehi Memy» sempre attiva",
+            "Dì «Ehi Memy» in qualsiasi momento, anche con l'app chiusa o lo schermo spento, e poi il comando.",
+            settings.wakeWord,
+        ) { on ->
+            if (!on) {
+                app.settings.setWakeWord(false)
+                MemyWakeService.sync(context)
+            } else {
+                val needed = buildList {
+                    if (!context.granted(Manifest.permission.RECORD_AUDIO)) add(Manifest.permission.RECORD_AUDIO)
+                    if (Build.VERSION.SDK_INT >= 33 && !context.granted(Manifest.permission.POST_NOTIFICATIONS)) add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+                if (needed.isEmpty()) enable() else launcher.launch(needed.toTypedArray())
+            }
+        }
+        if (settings.wakeWord) {
+            Text("Sensibilità", style = MaterialTheme.typography.labelLarge, color = MemyColors.TextPrimary)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                WakeSensitivity.entries.forEach { s ->
+                    val selected = settings.wakeSensitivity == s
+                    val shape = RoundedCornerShape(14.dp)
+                    Box(
+                        Modifier.weight(1f).clip(shape)
+                            .background(if (selected) MemyColors.Glass else androidx.compose.ui.graphics.Color.Transparent)
+                            .border(1.dp, if (selected) MemyColors.Mint else MemyColors.GlassBorder, shape)
+                            .clickable { app.settings.setWakeSensitivity(s) }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(s.label, style = MaterialTheme.typography.labelLarge, color = if (selected) MemyColors.TextPrimary else MemyColors.TextSecondary)
+                    }
+                }
+            }
+            Hint(
+                "Se Memy non ti sente scegli \"Alta\"; se si attiva da sola scegli \"Bassa\". " +
+                    "L'ascolto avviene tutto sul telefono: nessun audio viene inviato finché non dici «Ehi Memy». " +
+                    "Resta una notifica fissa e il consumo di batteria aumenta un po'."
+            )
+        }
+        PowerRow(
+            "Assistente del telefono",
+            if (isAssistant) "Memy è l'assistente predefinito: si apre con il gesto o il tasto dell'assistente."
+            else "Scegli Memy come app assistente digitale al posto di quella del telefono.",
+            isAssistant,
+        ) {
+            if (!AssistantRole.openSettings(context)) context.openAppDetails()
+        }
+        if (!isAssistant) {
+            Hint("Nella schermata che si apre: App assistente digitale → Memy. Su alcuni telefoni la voce si trova in Impostazioni → App → App predefinite.")
+        }
+    }
+}
+
 @Composable
 private fun PowersSection(context: Context, tick: Int) {
     val perms = remember {

@@ -13,6 +13,7 @@ Pensata per l'installazione diretta tramite APK, senza Play Store, e compatibile
 
 | Area | Esempi |
 |---|---|
+| Sempre pronta | Dì **"Ehi Memy"** anche con l'app chiusa o lo schermo spento; oppure scegli Memy come **assistente del telefono** |
 | Conversazione | "Ciao Memy, come stai?", domande di ogni tipo, con **ricerca web** (meteo, notizie, risultati) su tutti i modelli |
 | Usare le app | "Scrivi a Marco su WhatsApp che arrivo tra dieci minuti", "Cerca un video di ricette su YouTube", "Attiva il Bluetooth" |
 | Notifiche | "Leggimi le notifiche", "Rispondi a Giulia che va bene", "Cancella tutte le notifiche", "Che canzone è questa?" |
@@ -49,6 +50,16 @@ Microfono → riconoscimento vocale → Claude (in streaming, con strumenti e ri
   - Google, se sul telefono c'è l'app Google.
 
   Silero VAD capisce quando inizi e quando finisci di parlare.
+- **"Ehi Memy" sempre attiva** (facoltativa, *Impostazioni → Ehi Memy*): un piccolo modello di
+  [sherpa-onnx](https://k2-fsa.github.io/sherpa/onnx/kws/index.html) (circa 5 MB, incluso nell'app) ascolta sul
+  telefono solo la parola di attivazione; nessun audio viene inviato finché non la dici. Puoi dire tutto d'un fiato
+  "Ehi Memy, che ore sono?". Resta una notifica fissa "Memy è pronta" e il consumo di batteria aumenta un po'.
+  Dopo un riavvio del telefono o un aggiornamento riparte da sola se è attivo il controllo dello schermo o se Memy è
+  l'assistente predefinito; altrimenti compare una notifica da toccare.
+- **Assistente del telefono**: Memy si presenta ad Android come app "assistente digitale". Se la scegli in
+  *Impostazioni → Ehi Memy → Assistente del telefono*, si apre già in ascolto con il gesto o il tasto dell'assistente.
+  Su alcuni telefoni (anche OriginOS) questa scelta può essere nascosta o riservata all'assistente del produttore:
+  "Ehi Memy" funziona comunque.
 - **Conversazione continua**: dopo ogni risposta torna ad ascoltarti. Se tocchi la sfera mentre parla, la interrompi.
 - **Ti sente anche fuori dall'app**: durante una conversazione resta attivo un servizio con notifica "Memy". Così,
   mentre lavora in un'altra app, puoi rispondere a voce alle sue domande e conferme. Si spegne da solo pochi secondi
@@ -95,7 +106,9 @@ La voce e l'ascolto sono gratuiti (Groq ha un piano gratuito; Parakeet gira sul 
    Poi scegli la voce ascoltando le anteprime (*Impostazioni → Voce*).
 5. Attiva i poteri che vuoi (*Impostazioni → Poteri*).
 6. In *Impostazioni → Sempre pronta* segui i passaggi per OriginOS, così il telefono non chiude Memy.
-7. Aggiungi il riquadro **"Ehi Memy"** alle Impostazioni rapide: un tocco e Memy ti ascolta.
+7. Attiva **"Ehi Memy" sempre attiva** e, se il telefono lo permette, scegli Memy come assistente
+   (*Impostazioni → Ehi Memy*). Se non ti sente bene, alza la sensibilità.
+8. Aggiungi il riquadro **"Ehi Memy"** alle Impostazioni rapide: un tocco e Memy ti ascolta.
 
 ## Aggiornamenti automatici
 
@@ -126,6 +139,10 @@ EDGE_LIVE=1 ./gradlew :app:testDebugUnitTest --tests '*EdgeTtsTest*'   # prova r
 ASR_LIVE=1 ASR_MODEL_DIR=/percorso/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 \
   SHERPA_JNI_DIR=/percorso/lib LD_LIBRARY_PATH=/percorso/lib \
   ./gradlew :app:testDebugUnitTest --tests '*ParakeetLiveTest*'
+
+# Prova reale di "Ehi Memy": dieci voci Edge la pronunciano, più frasi qualsiasi per i falsi allarmi
+KWS_LIVE=1 SHERPA_JNI_DIR=/percorso/lib LD_LIBRARY_PATH=/percorso/lib \
+  ./gradlew :app:testDebugUnitTest --tests '*WakeWordLiveTest*'
 ./gradlew :app:assembleRelease                                # APK in app/build/outputs/apk/release/
 ```
 
@@ -140,10 +157,12 @@ personale va bene, ma puoi sostituirla impostando `NEXA_KEYSTORE_PASSWORD`, `NEX
 app/src/main/java/com/nexa/assistant/
 ├── MemyApp.kt, MemyController.kt, MainActivity.kt, MemyTileService.kt
 ├── MemySessionService.kt  # microfono attivo anche fuori dall'app durante una conversazione
+├── MemyWakeService.kt     # "Ehi Memy" sempre in ascolto
+├── MemyAssistant.kt       # Memy come assistente digitale predefinito di Android
 ├── agent/      # Ciclo con Claude in streaming, prompt di sistema, divisione in frasi
 ├── tools/      # Strumenti: base, schermo, notifiche, dati personali, sistema
 ├── access/     # Servizio di accessibilità e lettura delle notifiche
-├── speech/     # Voce Edge (EdgeTts + VoicePlayer); ascolto: VoiceCapture (Silero VAD), Whisper su Groq, Parakeet
+├── speech/     # Voce Edge (EdgeTts + VoicePlayer); ascolto: VoiceCapture (Silero VAD), Whisper su Groq, Parakeet, WakeWord
 ├── reminders/  # Promemoria
 ├── update/     # Aggiornamento automatico da GitHub
 ├── data/       # Impostazioni, memoria, chiavi cifrate
@@ -154,13 +173,13 @@ Per aggiungere uno strumento basta implementare `MemyTool` e registrarlo in `Mem
 
 ## Prossimi passi
 
-- Parola di attivazione "Ehi Memy" sempre in ascolto e ruolo di assistente predefinito.
 - Routine ("quando arrivo a casa…") e azioni programmate.
 
 ## Licenze dei componenti
 
 - Modello di ascolto [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3): licenza CC-BY-4.0
   (versione int8 per sherpa-onnx pubblicata da k2-fsa).
+- Modello della parola di attivazione: `sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20` di k2-fsa (Apache 2.0).
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): Apache 2.0. [Silero VAD](https://github.com/snakers4/silero-vad): MIT.
 - La voce usa il servizio "Leggi ad alta voce" di Microsoft Edge tramite il protocollo di
   [edge-tts](https://github.com/rany2/edge-tts) (LGPL-3.0, solo come riferimento: il codice di Memy è riscritto in Kotlin).
