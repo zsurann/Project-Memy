@@ -26,7 +26,7 @@ quello che ti serve, tutto d'un fiato:
 
 > «Ehi Memy, scrivi a Marco che arrivo tra dieci minuti.»
 
-Un breve segnale ti conferma che ti ha sentita. Il riconoscimento della parola avviene sul telefono: finché non la
+Un breve segnale ti conferma che sta ascoltando. Il riconoscimento della parola avviene sul telefono: finché non la
 chiami, nessun suono lascia il dispositivo. Se preferisci, puoi anche sceglierla come assistente del telefono e
 richiamarla con il gesto o il tasto dedicato.
 
@@ -49,7 +49,7 @@ serve il tuo sì.
 
 - **Messaggi e notifiche** — te le legge, risponde al posto tuo, le cancella quando non servono più.
 - **Tempo** — sveglie, timer, eventi in calendario, promemoria che arrivano all'ora giusta.
-- **Telefono** — chiama un contatto, manda un SMS, ti dice chi ti ha cercata.
+- **Telefono** — chiama un contatto, manda un SMS, ti dice chi ha chiamato.
 - **Il mondo fuori** — meteo, notizie, risultati, prezzi: cerca sul web e ti riassume la risposta a voce.
 - **Strada** — ti dice dove sei e ti porta dove vuoi andare.
 - **Piccole cose** — torcia, volume, musica, silenzioso, Non disturbare, fotocamera.
