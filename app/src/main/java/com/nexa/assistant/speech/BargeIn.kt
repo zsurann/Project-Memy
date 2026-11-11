@@ -45,7 +45,7 @@ class BargeInDetector(private val context: Context) {
                             sileroVadModelConfig = SileroVadModelConfig(
                                 model = VoiceCapture.vadModelFile(context).absolutePath,
                                 // Più severo del normale: deve scattare solo con una voce vicina e chiara.
-                                threshold = 0.65f, minSilenceDuration = 0.3f, minSpeechDuration = 0.15f,
+                                threshold = 0.8f, minSilenceDuration = 0.3f, minSpeechDuration = 0.25f,
                                 windowSize = WINDOW, maxSpeechDuration = 30f,
                             ),
                             sampleRate = VoiceCapture.SAMPLE_RATE, numThreads = 1,
@@ -74,13 +74,19 @@ class BargeInDetector(private val context: Context) {
                         if (n < 0) break
                         if (n == 0) continue
                         val frame = FloatArray(n) { shorts[it] / 32768f }
+                        var energy = 0.0
+                        for (v in frame) energy += v * v
+                        // Solo una voce vicina e abbastanza forte conta: i rumori lontani e il brusio no.
+                        val loud = kotlin.math.sqrt(energy / n) > MIN_RMS
                         recent.addLast(frame)
                         if (recent.size > KEEP_FRAMES) recent.removeFirst()
                         vad.acceptWaveform(frame)
                         while (!vad.empty()) vad.pop()
                         frames++
                         // I primi istanti servono alla cancellazione dell'eco per adattarsi alla voce di Memy.
-                        voiced = if (frames > SETTLE_FRAMES && vad.isSpeechDetected()) voiced + 1 else 0
+                        voiced = if (frames > SETTLE_FRAMES && vad.isSpeechDetected() && loud) voiced + 1
+                        else if (voiced > 0 && vad.isSpeechDetected()) voiced // brevi cali di volume dentro una parola
+                        else 0
                         if (voiced >= TRIGGER_FRAMES) {
                             handedOff = true
                             onSpeech(Capture(record, VoiceCapture.join(recent.takeLast(voiced + LEAD_FRAMES))))
@@ -104,9 +110,10 @@ class BargeInDetector(private val context: Context) {
     private companion object {
         const val WINDOW = 512 // 32 ms
         const val SETTLE_FRAMES = 12
-        /** Circa 0,4 secondi di voce continua: un colpo di tosse o un rumore non bastano. */
-        const val TRIGGER_FRAMES = 12
-        const val LEAD_FRAMES = 8
+        /** Circa 0,6 secondi di voce continua e forte: un colpo di tosse, un "eh" o un rumore non bastano. */
+        const val TRIGGER_FRAMES = 18
+        const val MIN_RMS = 0.012
+        const val LEAD_FRAMES = 10
         const val KEEP_FRAMES = 64
     }
 }
@@ -122,5 +129,29 @@ object Echo {
         if (h.size < 3) return false
         val said = words(spoken).toSet()
         return h.count { it in said } >= h.size * 0.7
+    }
+}
+
+
+/** Distingue parole vere da rumori, versi e "parole" inventate dal riconoscimento quando non c'è voce. */
+object SpokenWords {
+    private val FILLERS = setOf(
+        "eh", "ehm", "uhm", "um", "uh", "ah", "oh", "mh", "mm", "mmm", "hm", "hmm", "boh", "beh", "ehi", "ok", "okay", "si", "no",
+    )
+    /** Brevi risposte che hanno senso anche da sole. */
+    private val SHORT = setOf(
+        "si", "no", "ferma", "fermati", "stop", "basta", "aspetta", "annulla", "certo", "esatto", "giusto", "vai", "procedi",
+        "conferma", "confermo", "perfetto", "ok", "okay", "grazie", "smetti", "zitta", "silenzio", "alt",
+    )
+
+    private fun words(s: String) = java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
+        .replace(Regex("\\p{M}"), "").split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+
+    fun isMeaningful(text: String): Boolean {
+        val all = words(text)
+        if (all.isEmpty()) return false
+        if (all.size <= 2 && all.all { it in SHORT }) return true
+        val real = all.filter { it !in FILLERS && it.length >= 2 }
+        return real.size >= 2 && real.sumOf { it.length } >= 7
     }
 }

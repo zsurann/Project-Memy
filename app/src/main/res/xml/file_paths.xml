@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Documenti del telefono che Memy apre o condivide su tua richiesta -->
+    <external-path name="telefono" path="." />
+</paths>

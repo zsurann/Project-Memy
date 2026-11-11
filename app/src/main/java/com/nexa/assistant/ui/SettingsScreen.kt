@@ -586,12 +586,13 @@ private fun PowersSection(context: Context, tick: Int) {
     val notifications = remember(stamp) { Capabilities.notificationsEnabled(context) }
     val writeSettings = remember(stamp) { Capabilities.canWriteSettings(context) }
     val dnd = remember(stamp) { Capabilities.canControlDnd(context) }
+    val allFiles = remember(stamp) { Capabilities.allFilesAccess() }
     val missing = remember(stamp) { perms.filter { !context.granted(it.first) } }
-    val active = listOf(accessibility, notifications, writeSettings, dnd).count { it }
+    val active = listOf(accessibility, notifications, writeSettings, dnd, allFiles).count { it }
 
     SectionCard(
         Icons.Filled.AutoAwesome, "Poteri",
-        if (accessibility) "$active su 4 attivi · Memy può usare le app" else "Attiva il controllo dello schermo",
+        if (accessibility) "$active su 5 attivi · Memy può usare le app" else "Attiva il controllo dello schermo",
         attention = !accessibility,
     ) {
         Hint("Più poteri concedi, più cose Memy può fare da sola. Agisce solo quando glielo chiedi e chiede conferma prima di inviare, pagare o eliminare.")
@@ -605,6 +606,17 @@ private fun PowersSection(context: Context, tick: Int) {
         if (!accessibility) {
             Hint("Nelle impostazioni di accessibilità cerca \"Memy\" tra le app installate o scaricate e attivala. Se l'interruttore è bloccato: Info app → ⋮ → \"Consenti impostazioni con restrizioni\".")
             OutlineButton("Apri Info app", { context.openAppDetails() }, Modifier.fillMaxWidth())
+        }
+        PowerRow(
+            "File e documenti",
+            "Legge e modifica PDF, Word e altri file del telefono. I documenti che crea Memy non ne hanno bisogno.",
+            allFiles,
+        ) {
+            if (Build.VERSION.SDK_INT >= 30) {
+                context.safeStart(
+                    Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, android.net.Uri.parse("package:${context.packageName}"))
+                ) || context.safeStart(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            }
         }
         PowerRow(
             "Notifiche", "Legge le notifiche e risponde ai messaggi di WhatsApp, Telegram e simili.",

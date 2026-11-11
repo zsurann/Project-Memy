@@ -14,6 +14,10 @@ object Capabilities {
 
     fun notificationsEnabled(context: Context) = MemyNotificationListener.isEnabled(context)
 
+    /** Accesso a tutti i file: serve per leggere e modificare i documenti del telefono non creati da Memy. */
+    fun allFilesAccess(): Boolean =
+        android.os.Build.VERSION.SDK_INT >= 30 && runCatching { android.os.Environment.isExternalStorageManager() }.getOrDefault(false)
+
     fun canWriteSettings(context: Context) = Settings.System.canWrite(context)
 
     fun canControlDnd(context: Context) =

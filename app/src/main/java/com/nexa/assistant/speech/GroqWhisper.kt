@@ -28,7 +28,7 @@ class GroqWhisper(private val baseUrl: String = "https://api.groq.com/openai/v1"
             .addFormDataPart("model", MODEL)
             .addFormDataPart("language", "it")
             .addFormDataPart("temperature", "0")
-            .addFormDataPart("response_format", "json")
+            .addFormDataPart("response_format", "verbose_json")
             .addFormDataPart("prompt", prompt.take(600))
             .addFormDataPart("file", "voce.wav", VoiceCapture.wav(samples).toRequestBody("audio/wav".toMediaType()))
             .build()
@@ -50,7 +50,7 @@ class GroqWhisper(private val baseUrl: String = "https://api.groq.com/openai/v1"
                     resp.code,
                 )
             }
-            return clean(JSONObject(text).optString("text"))
+            return clean(spokenText(JSONObject(text)))
         }
     }
 
@@ -67,6 +67,23 @@ class GroqWhisper(private val baseUrl: String = "https://api.groq.com/openai/v1"
             "sottotitoli", "amara.org", "grazie per la visione", "iscriviti al canale", "qtss", "sottotitolato",
             "grazie a tutti per la visione",
         )
+
+        /**
+         * Il testo, senza i pezzi in cui Whisper stesso dice che probabilmente non c'era voce
+         * (è lì che, sui rumori, inventa parole).
+         */
+        internal fun spokenText(json: JSONObject): String {
+            val segments = json.optJSONArray("segments") ?: return json.optString("text")
+            return (0 until segments.length()).map { segments.getJSONObject(it) }
+                .filter { s ->
+                    val noSpeech = s.optDouble("no_speech_prob", 0.0)
+                    val logProb = s.optDouble("avg_logprob", 0.0)
+                    val compression = s.optDouble("compression_ratio", 1.0)
+                    !(noSpeech > 0.5 && logProb < -0.6) && logProb > -1.3 && compression < 2.6
+                }
+                .joinToString(" ") { it.optString("text").trim() }
+                .trim()
+        }
 
         internal fun clean(raw: String): String {
             val text = raw.trim()

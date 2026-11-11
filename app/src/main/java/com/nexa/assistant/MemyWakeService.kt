@@ -130,8 +130,7 @@ class MemyWakeService : Service() {
         val off = PendingIntent.getService(
             this, 2, Intent(this, MemyWakeService::class.java).setAction(ACTION_OFF), PendingIntent.FLAG_IMMUTABLE,
         )
-        return NotificationCompat.Builder(this, CHANNEL)
-            .setSmallIcon(R.drawable.ic_memy_tile)
+        return com.nexa.assistant.MemyNotifications.builder(this, CHANNEL)
             .setContentTitle("Memy è pronta")
             .setContentText("Dì «Ehi Memy» per parlarmi")
             .setOngoing(true)
@@ -186,8 +185,7 @@ class MemyWakeService : Service() {
                 context, 3, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
                 PendingIntent.FLAG_IMMUTABLE,
             )
-            val notification = NotificationCompat.Builder(context, REMINDER_CHANNEL)
-                .setSmallIcon(R.drawable.ic_memy_tile)
+            val notification = com.nexa.assistant.MemyNotifications.builder(context, REMINDER_CHANNEL)
                 .setContentTitle("«Ehi Memy» è in pausa")
                 .setContentText("Tocca per riattivare l'ascolto")
                 .setAutoCancel(true)

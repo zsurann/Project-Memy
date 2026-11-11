@@ -101,8 +101,7 @@ class ReminderReceiver : BroadcastReceiver() {
         val open = PendingIntent.getActivity(
             context, id, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(context, ReminderStore.CHANNEL)
-            .setSmallIcon(R.drawable.ic_memy_tile)
+        val notification = com.nexa.assistant.MemyNotifications.builder(context, ReminderStore.CHANNEL)
             .setContentTitle("Promemoria di Memy")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))

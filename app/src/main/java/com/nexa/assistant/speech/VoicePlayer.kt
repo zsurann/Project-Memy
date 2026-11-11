@@ -81,6 +81,14 @@ class VoicePlayer(
     private var previewJob: Job? = null
     private val previewCache = mutableMapOf<String, File>()
     private var focus: AudioFocusRequest? = null
+    /** Volume della voce: si abbassa mentre Memy ascolta se stai parlando sopra di lei. */
+    @Volatile private var volume = 1f
+
+    /** Abbassa (o riporta al normale) la voce mentre Memy ascolta cosa le stai dicendo. */
+    fun duck(on: Boolean) {
+        volume = if (on) 0.22f else 1f
+        scope.launch { runCatching { player?.setVolume(volume, volume) } }
+    }
     private var lastFallbackNotice = 0L
 
     private var tts: TextToSpeech? = null
@@ -281,6 +289,7 @@ class VoicePlayer(
             suspendCancellableCoroutine { cont ->
                 mp.setAudioAttributes(attributes)
                 mp.setDataSource(file.absolutePath)
+                mp.setVolume(volume, volume)
                 mp.setOnCompletionListener { if (cont.isActive) cont.resume(Unit) }
                 mp.setOnErrorListener { _, _, _ -> if (cont.isActive) cont.resume(Unit); true }
                 mp.setOnPreparedListener { it.start() }

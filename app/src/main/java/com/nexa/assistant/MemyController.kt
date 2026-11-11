@@ -13,6 +13,7 @@ import com.nexa.assistant.speech.ParakeetModel
 import com.nexa.assistant.speech.CaptureSpeechToText
 import com.nexa.assistant.speech.BargeInDetector
 import com.nexa.assistant.speech.Echo
+import com.nexa.assistant.speech.SpokenWords
 import com.nexa.assistant.speech.GroqWhisper
 import com.nexa.assistant.speech.WakeWord
 import com.nexa.assistant.tools.basicTools
@@ -124,17 +125,23 @@ class MemyController(private val app: MemyApp) {
     // Interruzione a voce: mentre Memy parla un rilevatore ascolta se inizi a parlare tu.
     private val barge = BargeInDetector(app)
     private var bargeRunning = false
-    private var bargeCapture: BargeInDetector.Capture? = null
-    /** Ascolto di ciò che dici mentre Memy lavora in un'app. */
+    /** Ascolto di ciò che dici mentre Memy lavora o parla (passa da qui prima di interromperla). */
     private var workStt: CaptureSpeechToText? = null
+    /** Ciò che hai detto sopra la domanda di conferma di Memy: vale come risposta. */
+    private var overHeard: String? = null
     private val userSpeaking = MutableStateFlow(false)
     /** Interruzioni in cui poi non hai detto nulla: se si ripetono, il microfono sta sentendo la voce di Memy. */
     private var falseBarges = 0
     /** Ultime parole dette da Memy, per riconoscere l'eco della sua voce. */
     @Volatile private var lastSpoken = ""
 
+    private fun spoke(text: String) {
+        lastSpoken = (lastSpoken + " " + text).takeLast(900)
+    }
+
     private val agent = MemyAgent(
-        basicTools(app) + screenTools() + notificationTools() + dataTools(app, app.memory, app.reminders) + systemTools(app),
+        basicTools(app) + screenTools() + notificationTools() + dataTools(app, app.memory, app.reminders) + systemTools(app) +
+            com.nexa.assistant.tools.documentTools(app),
         object : MemyAgent.Hooks {
             override suspend fun confirm(prompt: String): Boolean =
                 withContext(Dispatchers.Main) { askConfirmation(prompt) }
@@ -158,7 +165,7 @@ class MemyController(private val app: MemyApp) {
             }
 
             override fun onSentence(sentence: String) {
-                lastSpoken = sentence
+                spoke(sentence)
                 voice.enqueue(sentence)
                 _state.update { if (it.phase == Phase.THINKING) it.copy(phase = Phase.SPEAKING) else it }
             }
@@ -230,7 +237,7 @@ class MemyController(private val app: MemyApp) {
         val phase = _state.value.phase
         val whileSpeaking = voice.speaking.value && (phase == Phase.CONFIRMING || (phase == Phase.SPEAKING && !agentBusy))
         val whileWorking = agentBusy && phase != Phase.CONFIRMING && phase != Phase.LISTENING
-        val wanted = settings.state.value.bargeIn && activeStt == null && bargeCapture == null && workStt == null &&
+        val wanted = settings.state.value.bargeIn && activeStt == null && workStt == null &&
             (whileSpeaking || whileWorking) && canListen()
         if (wanted == bargeRunning) return
         bargeRunning = wanted
@@ -242,38 +249,37 @@ class MemyController(private val app: MemyApp) {
             scope.launch {
                 bargeRunning = false
                 val p = _state.value.phase
-                if (agentBusy && p != Phase.CONFIRMING && p != Phase.LISTENING && activeStt == null && workStt == null) {
-                    listenWhileWorking(capture)
-                    return@launch
+                val busy = activeStt != null || workStt != null || p == Phase.LISTENING
+                when {
+                    busy -> capture.release()
+                    agentBusy && p != Phase.CONFIRMING -> listenAside(capture, speaking = false)
+                    voice.speaking.value -> listenAside(capture, speaking = true)
+                    else -> capture.release()
                 }
-                val stillSpeaking = voice.speaking.value && activeStt == null &&
-                    (p == Phase.CONFIRMING || (p == Phase.SPEAKING && !agentBusy))
-                if (!stillSpeaking || bargeCapture != null) {
-                    capture.release()
-                    return@launch
-                }
-                // Memy tace subito; la risposta che stava dando resta comunque nella conversazione.
-                bargeCapture = capture
-                voice.stop()
             }
         }
     }
 
     /**
-     * Hai parlato mentre Memy lavorava. Lei sospende il passo successivo, ascolta la frase e poi:
-     * se era un "ferma" si ferma, se era una nuova indicazione lascia ciò che stava facendo e la segue,
-     * se non era niente (un rumore) riprende da dove era.
+     * Hai iniziato a parlare mentre Memy lavorava o parlava. Lei NON si interrompe subito: abbassa la voce,
+     * ascolta tutta la frase e solo se ha capito parole vere decide cosa fare. Un rumore, un colpo di tosse o
+     * la sua stessa voce non la fermano più.
+     * - Mentre lavora: sospende il passo successivo; "ferma" la ferma, una nuova indicazione la sostituisce.
+     * - Mentre parla: si zittisce e risponde a ciò che hai detto.
+     * - Mentre chiede conferma: quello che hai detto vale come risposta.
      */
-    private fun listenWhileWorking(capture: BargeInDetector.Capture) {
+    private fun listenAside(capture: BargeInDetector.Capture, speaking: Boolean) {
         val engine = newDictationEngine() ?: run {
             capture.release()
             return
         }
         workStt = engine
-        userSpeaking.value = true
+        if (!speaking) userSpeaking.value = true
+        if (speaking) voice.duck(true)
         fun done() {
             if (workStt === engine) workStt = null
             userSpeaking.value = false
+            voice.duck(false)
             _state.update { it.copy(partial = "") }
         }
         engine.start(object : SpeechToText.Listener {
@@ -282,27 +288,43 @@ class MemyController(private val app: MemyApp) {
                 if (workStt !== engine) return
                 done()
                 val command = WakeWord.strip(text)
+                val echo = Echo.isEcho(text, lastSpoken)
+                if (echo) bargeOutcome(real = false)
+                if (echo || !SpokenWords.isMeaningful(command)) {
+                    // Niente di concreto: Memy continua come se nulla fosse.
+                    afterIgnoredSpeech()
+                    return
+                }
+                bargeOutcome(real = true)
                 when {
-                    command.isBlank() || Echo.isEcho(text, lastSpoken) -> updateBarge()
                     isStopWord(command) -> stopAll()
+                    confirmation != null -> {
+                        overHeard = command
+                        voice.stop()
+                    }
                     else -> submit(command, interrupting = agentBusy)
                 }
             }
             override fun onError(message: String) {
                 if (workStt !== engine) return
                 done()
-                updateBarge()
+                afterIgnoredSpeech()
             }
         }, capture.record, capture.samples)
+    }
+
+    /** Dopo una frase scartata: si riprende ad ascoltare le interruzioni, o la conversazione se Memy ha finito. */
+    private fun afterIgnoredSpeech() {
+        val idle = _state.value.phase == Phase.IDLE && !agentBusy && confirmation == null && !voice.speaking.value
+        if (idle && settings.state.value.continuousConversation && canListen()) startListening() else updateBarge()
     }
 
     private fun stopWorkListening() {
         workStt?.stop()
         workStt = null
         userSpeaking.value = false
+        voice.duck(false)
     }
-
-    private fun takeBarge(): BargeInDetector.Capture? = bargeCapture.also { bargeCapture = null }
 
     /** Dopo un'interruzione: hai parlato davvero, o il microfono ha sentito la voce di Memy? */
     private fun bargeOutcome(real: Boolean) {
@@ -310,7 +332,7 @@ class MemyController(private val app: MemyApp) {
             falseBarges = 0
             return
         }
-        if (++falseBarges >= 2 && settings.state.value.bargeIn) {
+        if (++falseBarges >= 3 && settings.state.value.bargeIn) {
             falseBarges = 0
             settings.setBargeIn(false)
             notice("Ho disattivato \"Interrompila parlando\": su questo telefono il microfono sente la mia voce. Puoi riattivarla in Impostazioni → Conversazione e memoria (funziona bene con le cuffie).")
@@ -364,7 +386,7 @@ class MemyController(private val app: MemyApp) {
         when (_state.value.phase) {
             Phase.IDLE -> startListening()
             Phase.SPEAKING -> {
-                job?.cancel(); takeBarge()?.release(); voice.stop(); agentBusy = false; finishStreamingLine()
+                job?.cancel(); stopWorkListening(); voice.stop(); agentBusy = false; finishStreamingLine()
                 _state.update { it.copy(phase = Phase.IDLE) }
                 startListening()
             }
@@ -403,10 +425,9 @@ class MemyController(private val app: MemyApp) {
         }
     }
 
-    fun startListening(handoff: android.media.AudioRecord? = null, interrupted: BargeInDetector.Capture? = null): Boolean {
+    fun startListening(handoff: android.media.AudioRecord? = null): Boolean {
         val stt = readyOrExplain() ?: run {
             handoff?.release()
-            interrupted?.release()
             return false
         }
         ensureSession()
@@ -434,11 +455,9 @@ class MemyController(private val app: MemyApp) {
                 if (activeStt !== stt) return
                 activeStt = null
                 _state.update { it.copy(partial = "") }
-                val echo = interrupted != null && Echo.isEcho(text, lastSpoken)
-                if (interrupted != null) bargeOutcome(real = text.isNotBlank() && !echo)
                 val command = WakeWord.strip(text)
                 when {
-                    text.isBlank() || echo -> _state.update { it.copy(phase = Phase.IDLE) }
+                    text.isBlank() -> _state.update { it.copy(phase = Phase.IDLE) }
                     // Hai detto solo "Ehi Memy": resta in ascolto del comando.
                     command.isBlank() -> if (!startListening()) _state.update { it.copy(phase = Phase.IDLE) }
                     else -> submit(command)
@@ -453,11 +472,9 @@ class MemyController(private val app: MemyApp) {
             }
         }
         if (stt is CaptureSpeechToText) {
-            stt.start(listener, interrupted?.record ?: handoff, interrupted?.samples)
-            if (interrupted != null) handoff?.release()
+            stt.start(listener, handoff)
         } else {
             handoff?.release()
-            interrupted?.release()
             stt.start(listener)
         }
         return true
@@ -504,7 +521,6 @@ class MemyController(private val app: MemyApp) {
         confirmation?.complete(false)
         stopStt()
         stopWorkListening()
-        takeBarge()?.release()
         voice.stop()
         finishStreamingLine()
         addLine(ChatLine(ids.incrementAndGet(), fromUser = true, text = clean))
@@ -529,16 +545,12 @@ class MemyController(private val app: MemyApp) {
             }
             replaceStreamingLine(reply)
             agentBusy = false
-            lastSpoken = reply
             _state.update { it.copy(phase = if (voice.speaking.value) Phase.SPEAKING else it.phase) }
             updateOverlay()
             updateBarge()
             voice.awaitIdle()
-            val interrupted = takeBarge()
             _state.update { it.copy(phase = Phase.IDLE) }
             when {
-                // L'hai interrotta parlando: ti ascolta subito, a partire da ciò che hai già detto.
-                interrupted != null -> startListening(interrupted = interrupted)
                 // Stai già parlando (hai iniziato mentre finiva di lavorare): quella frase arriva da sola.
                 workStt != null -> Unit
                 // Conversazione continua: Memy torna ad ascoltarti, anche se sei in un'altra app.
@@ -597,7 +609,7 @@ class MemyController(private val app: MemyApp) {
         val svc = MemyAccessibilityService.instance
         val overlay = if (!inForeground && svc != null) scope.launch { svc.confirm(prompt, deferred) } else null
 
-        lastSpoken = prompt
+        spoke(prompt)
         updateBarge()
         voice.speakNow(prompt)
 
@@ -605,31 +617,25 @@ class MemyController(private val app: MemyApp) {
         var attempts = 0
         val answer = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) {
             while (!deferred.isCompleted && attempts < 3 && canListen()) {
-                val stt = resolveStt() ?: break
-                attempts++
-                val heard = CompletableDeferred<String>()
-                activeStt = stt
-                val interrupted = takeBarge()
-                val listener = object : SpeechToText.Listener {
-                    override fun onLevel(level: Float) { _level.value = level }
-                    override fun onPartial(text: String) { _state.update { it.copy(partial = text) } }
-                    override fun onFinal(text: String) {
-                        val echo = Echo.isEcho(text, lastSpoken)
-                        if (interrupted != null) bargeOutcome(real = text.isNotBlank() && !echo)
-                        heard.complete(if (echo) "" else text)
+                // Se hai già risposto mentre Memy faceva la domanda, vale quella risposta.
+                workStt?.let { stopWorkListening() }
+                val early = overHeard.also { overHeard = null }
+                val text = if (early != null) early else {
+                    val stt = resolveStt() ?: break
+                    attempts++
+                    val heard = CompletableDeferred<String>()
+                    activeStt = stt
+                    stt.start(object : SpeechToText.Listener {
+                        override fun onLevel(level: Float) { _level.value = level }
+                        override fun onPartial(text: String) { _state.update { it.copy(partial = text) } }
+                        override fun onFinal(text: String) { heard.complete(if (Echo.isEcho(text, lastSpoken)) "" else text) }
+                        override fun onError(message: String) { heard.complete("") }
+                    })
+                    // Il primo che arriva vince: la voce oppure un tocco sui pulsanti.
+                    kotlinx.coroutines.selects.select {
+                        heard.onAwait { it }
+                        deferred.onAwait { "" }
                     }
-                    override fun onError(message: String) { heard.complete("") }
-                }
-                if (stt is CaptureSpeechToText) {
-                    stt.start(listener, interrupted?.record, interrupted?.samples)
-                } else {
-                    interrupted?.release()
-                    stt.start(listener)
-                }
-                // Il primo che arriva vince: la voce oppure un tocco sui pulsanti.
-                val text = kotlinx.coroutines.selects.select {
-                    heard.onAwait { it }
-                    deferred.onAwait { "" }
                 }
                 stopStt()
                 _state.update { it.copy(partial = "") }
@@ -637,8 +643,9 @@ class MemyController(private val app: MemyApp) {
                 val parsed = parseYesNo(text)
                 if (parsed != null) deferred.complete(parsed)
                 else if (text.isNotBlank()) {
-                    lastSpoken = "Scusa, non ho capito. Rispondi sì oppure no."
-                    voice.speakNow(lastSpoken)
+                    val again = "Scusa, non ho capito. Rispondi sì oppure no."
+                    spoke(again)
+                    voice.speakNow(again)
                 }
             }
             deferred.await()
@@ -646,7 +653,8 @@ class MemyController(private val app: MemyApp) {
         deferred.complete(answer)
         overlay?.cancel()
         stopStt()
-        takeBarge()?.release()
+        stopWorkListening()
+        overHeard = null
         voice.stop()
         confirmation = null
         _state.update { it.copy(phase = Phase.THINKING, pendingConfirmation = null, partial = "") }
@@ -669,7 +677,6 @@ class MemyController(private val app: MemyApp) {
         confirmation?.complete(false)
         stopStt()
         stopWorkListening()
-        takeBarge()?.release()
         voice.stop()
         finishStreamingLine()
         _state.update { it.copy(phase = Phase.IDLE, partial = "", pendingConfirmation = null) }

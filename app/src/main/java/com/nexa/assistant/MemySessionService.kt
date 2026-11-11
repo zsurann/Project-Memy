@@ -77,8 +77,7 @@ class MemySessionService : Service() {
                 context, 1, Intent(context, MemySessionService::class.java).setAction(ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE,
             )
-            return NotificationCompat.Builder(context, CHANNEL)
-                .setSmallIcon(R.drawable.ic_memy_tile)
+            return com.nexa.assistant.MemyNotifications.builder(context, CHANNEL)
                 .setContentTitle("Memy")
                 .setContentText(text)
                 .setOngoing(true)

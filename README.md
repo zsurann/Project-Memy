@@ -52,6 +52,8 @@ serve il tuo sì.
 - **Telefono** — chiama un contatto, manda un SMS, ti dice chi ha chiamato.
 - **Il mondo fuori** — meteo, notizie, risultati, prezzi: cerca sul web e ti riassume la risposta a voce.
 - **Strada** — ti dice dove sei e ti porta dove vuoi andare.
+- **Documenti** — scrive per te PDF, file Word, tabelle e pagine curate («fammi un PDF con la lista della spesa»),
+  li modifica quando cambi idea, te li apre o li manda a chi vuoi. Se glielo permetti, legge anche i tuoi PDF e Word.
 - **Piccole cose** — torcia, volume, musica, silenzioso, Non disturbare, fotocamera.
 
 ## Una conversazione vera
@@ -59,7 +61,8 @@ serve il tuo sì.
 Memy non aspetta che tu finisca i convenevoli. Risponde mentre sta ancora pensando, frase dopo frase, e dopo ogni
 risposta resta in ascolto: puoi continuare senza richiamarla.
 
-Se sta parlando e hai già capito, **parlale sopra**. Si ferma e ti ascolta, come farebbe chiunque.
+Se sta parlando o lavorando e vuoi cambiare qualcosa, **parlale sopra**. Ascolta tutta la frase e, se hai detto
+qualcosa di concreto, si ferma e ti segue; un rumore o un colpo di tosse non la interrompono.
 
 E si ricorda di te. Dille una volta «mia sorella si chiama Giulia» e la prossima volta saprà a chi scrivere.
 
