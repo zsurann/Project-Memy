@@ -73,7 +73,7 @@ class ScreenshotTest {
                     ChatLine(1, true, "Svegliami alle 7"),
                     ChatLine(2, false, "Fatto, Genny! Ti ho impostato la sveglia alle sette di domattina, mercoledì 11 novembre. Buon riposo!"),
                     ChatLine(3, true, "Scrivi a Marco su WhatsApp che arrivo tra dieci minuti"),
-                    ChatLine(4, false, "Certo, gli scrivo subito.", streaming = true, tool = "tap_element"),
+                    ChatLine(4, false, "", streaming = true, tool = "tap_element"),
                 ),
             ),
             0.4f,
