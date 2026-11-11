@@ -586,6 +586,9 @@ private fun PowersSection(context: Context, tick: Int) {
             "Controllo dello schermo", "Legge lo schermo e usa qualsiasi app al posto tuo: scrive messaggi, cerca, tocca, scorre.",
             accessibility,
         ) { context.safeStart(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        if (accessibility && com.nexa.assistant.access.MemyAccessibilityService.instance == null) {
+            Hint("Risulta attivo, ma il telefono lo ha sospeso: tocca \"Attivo\", spegni Memy e riaccendila. Per evitarlo, blocca Memy con il lucchetto nelle app recenti.", warning = true)
+        }
         if (!accessibility) {
             Hint("Nelle impostazioni di accessibilità cerca \"Memy\" tra le app installate o scaricate e attivala. Se l'interruttore è bloccato: Info app → ⋮ → \"Consenti impostazioni con restrizioni\".")
             OutlineButton("Apri Info app", { context.openAppDetails() }, Modifier.fillMaxWidth())

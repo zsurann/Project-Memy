@@ -85,6 +85,8 @@ internal fun normalize(s: String): String =
         .trim()
 
 internal const val NEED_ACCESSIBILITY =
-    "Il controllo dello schermo non è attivo. Di' all'utente di attivarlo in Memy: Impostazioni → Poteri → Controllo dello schermo."
+    "Il controllo dello schermo non è collegato in questo momento. Se l'utente lo aveva già attivato, il telefono lo ha " +
+        "sospeso (succede quando chiude Memy dalle app recenti): deve spegnerlo e riaccenderlo in Memy → Impostazioni → " +
+        "Poteri → Controllo dello schermo, e bloccare Memy con il lucchetto nelle app recenti. Altrimenti deve attivarlo lì."
 internal const val NEED_NOTIFICATIONS =
     "L'accesso alle notifiche non è attivo. Di' all'utente di attivarlo in Memy: Impostazioni → Poteri → Notifiche."

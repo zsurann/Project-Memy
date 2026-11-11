@@ -15,6 +15,15 @@ fun screenTools(): List<MemyTool> = listOf(
 
 private fun service() = MemyAccessibilityService.instance
 
+/** Legge lo schermo; se la finestra non è ancora pronta riprova per un attimo. */
+private suspend fun readWithRetry(svc: MemyAccessibilityService): String {
+    repeat(3) {
+        if (svc.hasReadableWindow()) return svc.readScreen()
+        delay(250)
+    }
+    return svc.readScreen()
+}
+
 /** Dopo un'azione aspetta che l'interfaccia si aggiorni e restituisce il nuovo schermo. */
 private suspend fun settledScreen(svc: MemyAccessibilityService, waitMs: Long = 650): String {
     delay(waitMs)
@@ -47,7 +56,7 @@ class ReadScreenTool : MemyTool {
     override val required = emptyList<String>()
     override suspend fun execute(input: ToolInput): ToolResult {
         val svc = service() ?: return ToolResult.error(NEED_ACCESSIBILITY)
-        return withContext(Dispatchers.Main) { ToolResult.ok(svc.readScreen()) }
+        return withContext(Dispatchers.Main) { ToolResult.ok(readWithRetry(svc)) }
     }
 }
 
@@ -227,6 +236,6 @@ class WaitTool : MemyTool {
     override suspend fun execute(input: ToolInput): ToolResult {
         delay((input.int("seconds") ?: 2).coerceIn(1, 10) * 1000L)
         val svc = service() ?: return ToolResult.ok("Attesa terminata.")
-        return withContext(Dispatchers.Main) { ToolResult.ok(svc.readScreen()) }
+        return withContext(Dispatchers.Main) { ToolResult.ok(readWithRetry(svc)) }
     }
 }

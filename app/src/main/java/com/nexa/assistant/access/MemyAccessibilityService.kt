@@ -60,9 +60,29 @@ class MemyAccessibilityService : AccessibilityService() {
 
     // ------------------------------------------------------------------ leggere lo schermo
 
+    /**
+     * La finestra dell'app che l'utente ha davanti. Di solito è quella "attiva"; quando Android non ne indica una
+     * (succede sulla schermata Home o se Memy è stata chiamata a voce senza toccare lo schermo) oppure indica
+     * l'indicatore di Memy, si cerca tra le finestre visibili quella dell'app più in alto.
+     */
+    private fun activeRoot(): AccessibilityNodeInfo? {
+        val active = runCatching { rootInActiveWindow }.getOrNull()
+        if (active != null && active.packageName?.toString() != packageName) return active
+        val fromWindows = runCatching {
+            windows.orEmpty()
+                .filter { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION }
+                .sortedWith(compareByDescending<android.view.accessibility.AccessibilityWindowInfo> { it.isFocused || it.isActive }.thenByDescending { it.layer })
+                .firstNotNullOfOrNull { w -> w.root?.takeIf { it.packageName?.toString() != packageName } }
+        }.getOrNull()
+        return fromWindows ?: active
+    }
+
+    fun hasReadableWindow(): Boolean = activeRoot() != null
+
     /** Descrive lo schermo attuale come elenco numerato di elementi. */
     fun readScreen(): String {
-        val root = rootInActiveWindow ?: return "Schermo non leggibile in questo momento (nessuna finestra attiva o app protetta)."
+        val root = activeRoot()
+            ?: return "Il testo di questa schermata non è leggibile in questo momento. Usa look_at_screen per vederla come immagine."
         val list = mutableListOf<Element>()
         collect(root, list, 0)
         elements = list
@@ -170,7 +190,7 @@ class MemyAccessibilityService : AccessibilityService() {
 
     /** Scrive nel campo che ha il cursore in questo momento. */
     fun setTextInFocused(text: String): Boolean {
-        val focused = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+        val focused = activeRoot()?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
         val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
         return focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
     }
@@ -185,14 +205,14 @@ class MemyAccessibilityService : AccessibilityService() {
     /** Preme "Invio" sulla tastiera (es. per avviare una ricerca). */
     fun pressEnter(): Boolean {
         if (Build.VERSION.SDK_INT < 30) return false
-        val focused = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
+        val focused = activeRoot()?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
         return focused.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
     }
 
     suspend fun scroll(direction: String, el: Element?): Boolean {
         val forward = direction == "down" || direction == "right"
         val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-        val target = el?.node?.takeIf { it.isScrollable } ?: findScrollable(rootInActiveWindow)
+        val target = el?.node?.takeIf { it.isScrollable } ?: findScrollable(activeRoot())
         if ((direction == "down" || direction == "up") && target?.performAction(action) == true) return true
         // Ripiego: trascinamento sullo schermo.
         val dm = resources.displayMetrics
