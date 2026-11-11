@@ -352,22 +352,38 @@ fun SectionCard(
 ) {
     var expanded by rememberSaveable(title) { mutableStateOf(initiallyExpanded || previewExpandAllSections) }
     val rotation by animateFloatAsState(if (expanded) 180f else 0f, tween(280), label = "chevron")
-    val shape = RoundedCornerShape(24.dp)
+    val shape = RoundedCornerShape(26.dp)
+    val open by animateFloatAsState(if (expanded) 1f else 0f, tween(320), label = "open")
+    val accent = if (attention) MemyColors.Amber else MemyColors.Violet
     Column(
         modifier
             .fillMaxWidth()
             .clip(shape)
             .background(MemyColors.Glass)
-            .border(1.dp, if (attention) MemyColors.Amber.copy(alpha = 0.45f) else MemyColors.GlassBorder, shape)
+            // Quando la sezione è aperta si accende una luce in alto, come l'aurora dello sfondo.
+            .background(Brush.verticalGradient(listOf(accent.copy(alpha = 0.16f * open), Color.Transparent), endY = 420f))
+            .border(
+                1.dp,
+                Brush.verticalGradient(
+                    listOf(
+                        if (attention) MemyColors.Amber.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.11f + 0.12f * open),
+                        Color.White.copy(alpha = 0.05f),
+                    )
+                ),
+                shape,
+            )
     ) {
         Row(
-            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(16.dp),
+            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 16.dp, vertical = 15.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Una piccola "sfera" per ogni sezione: richiama quella di Memy.
             Box(
-                Modifier.size(40.dp).clip(RoundedCornerShape(13.dp)).background(MemyColors.AccentGradient),
+                Modifier.size(42.dp).clip(CircleShape)
+                    .background(Brush.radialGradient(listOf(accent.copy(alpha = 0.55f), MemyColors.Cyan.copy(alpha = 0.10f))))
+                    .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape),
                 contentAlignment = Alignment.Center,
-            ) { Icon(icon, null, tint = Color.White, modifier = Modifier.size(21.dp)) }
+            ) { Icon(icon, null, tint = Color.White, modifier = Modifier.size(20.dp)) }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleMedium, color = MemyColors.TextPrimary)
@@ -378,7 +394,7 @@ fun SectionCard(
                 )
             }
             Icon(
-                Icons.Filled.KeyboardArrowDown, if (expanded) "Chiudi" else "Apri", tint = MemyColors.TextSecondary,
+                Icons.Filled.KeyboardArrowDown, if (expanded) "Chiudi" else "Apri", tint = MemyColors.TextTertiary,
                 modifier = Modifier.graphicsLayer { rotationZ = rotation },
             )
         }
@@ -394,4 +410,34 @@ fun SectionCard(
             )
         }
     }
+}
+
+
+/** Interruttore nello stile di Memy: quando è acceso si riempie con la sfumatura viola-azzurra. */
+@Composable
+fun MemySwitch(checked: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    val p by animateFloatAsState(if (checked) 1f else 0f, spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMedium), label = "switch")
+    Box(
+        modifier.size(width = 50.dp, height = 30.dp).clip(CircleShape)
+            .background(MemyColors.Glass)
+            .background(MemyColors.AccentGradient, alpha = p.coerceIn(0f, 1f))
+            .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
+            .clickable { onChange(!checked) },
+    ) {
+        Box(
+            Modifier.padding(3.dp).size(24.dp)
+                .graphicsLayer { translationX = p * 20.dp.toPx() }
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.55f + 0.45f * p.coerceIn(0f, 1f)))
+        )
+    }
+}
+
+/** Titoletto che raggruppa più sezioni. */
+@Composable
+fun GroupLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text.uppercase(), style = MaterialTheme.typography.labelMedium.copy(letterSpacing = androidx.compose.ui.unit.TextUnit(1.4f, androidx.compose.ui.unit.TextUnitType.Sp)),
+        color = MemyColors.TextTertiary, modifier = modifier.padding(start = 6.dp, top = 10.dp, bottom = 0.dp),
+    )
 }

@@ -24,3 +24,14 @@ class ConfirmationTest {
         listOf("", "che cosa?", "boh", "mmm").forEach { assertEquals(it, null, MemyController.parseYesNo(it)) }
     }
 }
+
+class StopWordTest {
+    @org.junit.Test
+    fun recognisesStopRequests() {
+        org.junit.Assert.assertTrue(MemyController.isStopWord("Ferma!"))
+        org.junit.Assert.assertTrue(MemyController.isStopWord("Basta così."))
+        org.junit.Assert.assertTrue(MemyController.isStopWord("lascia stare"))
+        org.junit.Assert.assertFalse(MemyController.isStopWord("Ferma la musica"))
+        org.junit.Assert.assertFalse(MemyController.isStopWord("No, scrivi a Giulia invece"))
+    }
+}

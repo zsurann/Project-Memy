@@ -59,6 +59,9 @@ class MemyAgent(
         /** Memy sta usando uno strumento (o "web_search"). */
         fun onToolUse(toolName: String) {}
 
+        /** Chiamata prima di ogni azione: sospende finché l'utente sta parlando, così può fermare o correggere Memy. */
+        suspend fun beforeTool() {}
+
         /** Claude ha iniziato a usare uno strumento: da qui lavora in silenzio. */
         fun onWorkStarted() {}
 
@@ -94,18 +97,24 @@ class MemyAgent(
         history.clear()
     }
 
-    suspend fun run(userText: String, options: Options): String = withContext(Dispatchers.IO) {
-        turn.withLock { runTurn(userText, options) }
+    /**
+     * @param interrupting l'utente ha parlato mentre Memy stava ancora lavorando alla richiesta precedente
+     */
+    suspend fun run(userText: String, options: Options, interrupting: Boolean = false): String = withContext(Dispatchers.IO) {
+        turn.withLock { runTurn(userText, options, interrupting) }
     }
 
-    private suspend fun runTurn(userText: String, options: Options): String {
+    private suspend fun runTurn(userText: String, options: Options, interrupting: Boolean): String {
         val now = System.currentTimeMillis()
         if (now - lastActivity > CONVERSATION_TIMEOUT_MS || history.size > MAX_HISTORY) history.clear()
         lastActivity = now
 
         val api = clientFor(options.apiKey)
         val checkpoint = history.size
-        history += MessageParam.ofUser("${SystemPrompt.timeContext()} $userText")
+        val note = if (interrupting) " [Ti ho interrotta mentre lavoravi: quello che dico ora corregge o sostituisce la richiesta di prima.]" else ""
+        history += MessageParam.ofUser("${SystemPrompt.timeContext()}$note $userText")
+        // Se l'utente interrompe, si conserva tutto fino all'ultimo passaggio completato: così Memy sa cosa stava facendo.
+        var safePoint = history.size
         val spoken = StringBuilder()
         val job = coroutineContext[Job]
 
@@ -115,7 +124,10 @@ class MemyAgent(
                 history += response.toParam()
 
                 when (response.stopReason().orElse(StopReason.END_TURN)) {
-                    StopReason.TOOL_USE -> history += runTools(response)
+                    StopReason.TOOL_USE -> {
+                        history += runTools(response)
+                        safePoint = history.size
+                    }
                     StopReason.PAUSE_TURN -> Unit // ricerca web lunga: il server chiede di proseguire
                     StopReason.REFUSAL -> {
                         history.clear()
@@ -140,52 +152,98 @@ class MemyAgent(
             rollback(checkpoint)
             throw AgentException(describe(e))
         } catch (e: AnthropicIoException) {
+            if (job?.isActive == false) {
+                rollback(safePoint)
+                throw CancellationException("annullato")
+            }
             rollback(checkpoint)
-            if (job?.isActive == false) throw CancellationException("annullato")
             throw AgentException("Non riesco a collegarmi a internet. Controlla la connessione.")
         } catch (e: CancellationException) {
-            rollback(checkpoint)
+            rollback(safePoint)
             throw e
         } catch (e: Exception) {
             // Qualsiasi altro imprevisto: la cronologia torna valida, così la conversazione può continuare.
+            if (job?.isActive == false) {
+                rollback(safePoint)
+                throw CancellationException("annullato")
+            }
             rollback(checkpoint)
-            if (job?.isActive == false) throw CancellationException("annullato")
             throw AgentException("Si è verificato un errore imprevisto: ${e.message}")
         }
     }
 
     /** Una chiamata in streaming: consegna le frasi man mano e restituisce il messaggio completo. */
+    /**
+     * Una chiamata in streaming: restituisce il messaggio completo.
+     *
+     * Memy lavora in silenzio: il testo viene letto ad alta voce solo se NON accompagna l'uso di uno strumento.
+     * Per questo le frasi restano in attesa finché non si capisce che tipo di risposta è: se arriva uno strumento
+     * vengono scartate (erano solo "ora apro…"), se la risposta finisce o è ormai chiaramente un discorso vengono lette.
+     */
     private fun streamOnce(api: AnthropicClient, params: MessageCreateParams, spoken: StringBuilder, job: Job?): Message {
         val accumulator = MessageAccumulator.create()
-        val splitter = SentenceSplitter { hooks.onSentence(it) }
-        if (spoken.isNotEmpty()) spoken.append(' ')
+        val held = ArrayList<String>()
+        var heldChars = 0
+        var released = false
+        var usedClientTool = false
+        fun release() {
+            released = true
+            held.forEach { hooks.onSentence(it) }
+            held.clear()
+        }
+        val splitter = SentenceSplitter { sentence ->
+            if (released) hooks.onSentence(sentence)
+            else {
+                held += sentence
+                heldChars += sentence.length
+                if (heldChars >= SPEAK_AFTER_CHARS) release()
+            }
+        }
+        fun discardNarration() {
+            held.clear(); heldChars = 0; released = false
+            if (spoken.isNotEmpty()) {
+                spoken.setLength(0)
+                hooks.onText("")
+            }
+        }
         api.messages().createStreaming(params).use { stream ->
             // Se l'utente interrompe, la connessione si chiude subito invece di aspettare il prossimo dato.
             val onCancel = job?.invokeOnCompletion { runCatching { stream.close() } }
             try {
-            val iterator = stream.stream().iterator()
-            while (iterator.hasNext()) {
-                if (job?.isActive == false) throw CancellationException("annullato")
-                val event = iterator.next()
-                accumulator.accumulate(event)
-                event.contentBlockStart().ifPresent { start ->
-                    start.contentBlock().serverToolUse().ifPresent { hooks.onToolUse("web_search") }
-                    start.contentBlock().toolUse().ifPresent { hooks.onWorkStarted() }
-                }
-                event.contentBlockDelta().ifPresent { d ->
-                    d.delta().text().ifPresent { t ->
-                        spoken.append(t.text())
-                        splitter.feed(t.text())
-                        hooks.onText(spoken.toString().trim())
+                val iterator = stream.stream().iterator()
+                while (iterator.hasNext()) {
+                    if (job?.isActive == false) throw CancellationException("annullato")
+                    val event = iterator.next()
+                    accumulator.accumulate(event)
+                    event.contentBlockStart().ifPresent { start ->
+                        start.contentBlock().serverToolUse().ifPresent {
+                            discardNarration()
+                            hooks.onToolUse("web_search")
+                        }
+                        start.contentBlock().toolUse().ifPresent {
+                            usedClientTool = true
+                            discardNarration()
+                            hooks.onWorkStarted()
+                        }
+                    }
+                    event.contentBlockDelta().ifPresent { d ->
+                        d.delta().text().ifPresent { t ->
+                            if (usedClientTool) return@ifPresent // testo dopo uno strumento: non si legge e non si mostra
+                            spoken.append(t.text())
+                            splitter.feed(t.text())
+                            hooks.onText(spoken.toString().trim())
+                        }
                     }
                 }
-            }
             } finally {
                 onCancel?.dispose()
             }
         }
         if (job?.isActive == false) throw CancellationException("annullato")
-        splitter.flush()
+        if (!usedClientTool) {
+            splitter.flush()
+            release()
+        }
         return accumulator.message()
     }
 
@@ -227,6 +285,7 @@ class MemyAgent(
             return ToolResult.error("Parametri non validi: ${e.message}")
         }
         hooks.onToolUse(tool.name)
+        hooks.beforeTool()
         return try {
             val prompt = tool.confirmationPrompt(input)
             if (prompt != null && !hooks.confirm(prompt)) {
@@ -324,6 +383,8 @@ class MemyAgent(
 
     private companion object {
         const val MAX_STEPS = 40
+        /** Oltre questa lunghezza il testo è chiaramente una risposta, non una frase di circostanza: si inizia a leggerlo. */
+        const val SPEAK_AFTER_CHARS = 220
         const val MAX_HISTORY = 80
         const val CONVERSATION_TIMEOUT_MS = 15 * 60 * 1000L
     }

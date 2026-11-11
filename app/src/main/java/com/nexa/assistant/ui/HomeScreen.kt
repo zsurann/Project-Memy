@@ -290,6 +290,7 @@ private fun StatusLabel(
     val subtitle = when (phase) {
         Phase.IDLE -> if (wakeWord) "Tocca la sfera o dì «Ehi Memy»" else "Tocca la sfera e parlami"
         Phase.LISTENING -> partial.ifBlank { if (listenerName.isNotBlank()) "con $listenerName" else "" }
+        Phase.THINKING -> if (bargeIn && chatting) "Parlami se vuoi fermarmi o cambiare qualcosa" else ""
         Phase.SPEAKING -> if (bargeIn) "Parla o tocca la sfera per interrompermi" else "Tocca la sfera per interrompermi"
         else -> ""
     }

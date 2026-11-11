@@ -100,8 +100,9 @@ class MemyAgentTest {
 
         val reply = agent(torch, hooks).run("accendi la torcia", opts())
 
-        assertEquals(listOf("Certo, accendo la torcia.", "Ecco fatto, la torcia è accesa!", "Serve altro?"), hooks.sentences)
-        assertTrue(reply.contains("Serve altro?"))
+        // "Certo, accendo la torcia." accompagna uno strumento: Memy lavora in silenzio e non la legge.
+        assertEquals(listOf("Ecco fatto, la torcia è accesa!", "Serve altro?"), hooks.sentences)
+        assertEquals("Ecco fatto, la torcia è accesa! Serve altro?", reply)
         assertEquals(1, torch.calls.size)
         assertEquals(true, torch.calls[0].bool("on"))
 

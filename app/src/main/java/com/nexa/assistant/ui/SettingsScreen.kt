@@ -66,8 +66,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -129,14 +127,21 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
 
     AuroraBackground(intensity = 0.6f) {
         Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 10.dp, top = 8.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (settings.hasApiKey) {
                     CircleIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Indietro", {
                         app.controller.voice.stopPreview(); onBack()
-                    }, size = 42.dp, tint = MemyColors.TextPrimary)
+                    }, size = 40.dp, tint = MemyColors.TextPrimary)
                     Spacer(Modifier.width(14.dp))
                 }
-                Text("Impostazioni", style = MaterialTheme.typography.headlineSmall, color = MemyColors.TextPrimary)
+                Column(Modifier.weight(1f)) {
+                    Text("Impostazioni", style = MaterialTheme.typography.headlineSmall, color = MemyColors.TextPrimary)
+                    Text(
+                        "Memy ${app.updates.currentVersionName} · Claude ${settings.model.label}",
+                        style = MaterialTheme.typography.labelMedium, color = MemyColors.TextTertiary,
+                    )
+                }
+                MemyOrb(phase = com.nexa.assistant.Phase.IDLE, level = 0f, size = 58.dp)
             }
 
             Column(
@@ -151,6 +156,7 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                     }
                 }
 
+                GroupLabel("Cervello e voce")
                 // ------------------------------------------------ Chiavi
                 SectionCard(
                     Icons.Filled.Key, "Chiavi",
@@ -243,6 +249,7 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                     }
                 }
 
+                GroupLabel("Cosa può fare")
                 // ------------------------------------------------ Poteri
                 PowersSection(context, tick)
 
@@ -280,6 +287,7 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
 
                 WakeSection(app, context, tick)
 
+                GroupLabel("Telefono e aggiornamenti")
                 // ------------------------------------------------ OriginOS
                 SectionCard(
                     Icons.Filled.BatteryChargingFull, "Sempre pronta",
@@ -525,8 +533,8 @@ private fun WakeSection(app: MemyApp, context: Context, tick: Int) {
                     val shape = RoundedCornerShape(14.dp)
                     Box(
                         Modifier.weight(1f).clip(shape)
-                            .background(if (selected) MemyColors.Glass else androidx.compose.ui.graphics.Color.Transparent)
-                            .border(1.dp, if (selected) MemyColors.Mint else MemyColors.GlassBorder, shape)
+                            .background(if (selected) MemyColors.Violet.copy(alpha = 0.2f) else Color.Transparent)
+                            .border(1.dp, if (selected) SolidColor(MemyColors.Violet) else SolidColor(MemyColors.GlassBorder), shape)
                             .clickable { app.settings.setWakeSensitivity(s) }
                             .padding(vertical = 10.dp),
                         contentAlignment = Alignment.Center,
@@ -666,11 +674,14 @@ private fun PowerRow(title: String, subtitle: String, enabled: Boolean, onOpen: 
 
 @Composable
 private fun Choice(selected: Boolean, title: String, subtitle: String, badge: String? = null, onClick: () -> Unit) {
-    val border by animateColorAsState(if (selected) MemyColors.Violet else MemyColors.GlassBorder, label = "choiceBorder")
-    val bg by animateColorAsState(if (selected) MemyColors.Violet.copy(alpha = 0.16f) else Color.Transparent, label = "choiceBg")
+    val sel by animateFloatAsState(if (selected) 1f else 0f, tween(260), label = "choice")
+    val shape = RoundedCornerShape(18.dp)
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(bg)
-            .border(1.dp, border, RoundedCornerShape(16.dp)).clickable(onClick = onClick)
+        Modifier.fillMaxWidth().clip(shape)
+            .background(Brush.horizontalGradient(listOf(MemyColors.Violet.copy(alpha = 0.22f * sel), MemyColors.Cyan.copy(alpha = 0.08f * sel))))
+            .border(1.dp, MemyColors.GlassBorder, shape)
+            .border(1.dp, Brush.linearGradient(listOf(MemyColors.Violet.copy(alpha = sel), MemyColors.Cyan.copy(alpha = sel))), shape)
+            .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -709,13 +720,7 @@ private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChang
             Text(title, style = MaterialTheme.typography.labelLarge, color = MemyColors.TextPrimary)
             Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MemyColors.TextSecondary)
         }
-        Switch(
-            checked = checked, onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(
-                checkedTrackColor = MemyColors.Violet, checkedThumbColor = Color.White,
-                uncheckedTrackColor = MemyColors.Glass, uncheckedBorderColor = MemyColors.GlassBorder, uncheckedThumbColor = MemyColors.TextSecondary,
-            ),
-        )
+        MemySwitch(checked, onChange)
     }
 }
 
