@@ -14,7 +14,7 @@ class ConfirmationTest {
 
     @Test
     fun noAnswers() {
-        listOf("no", "No grazie", "annulla", "aspetta un attimo", "ferma tutto", "sì, anzi no").forEach {
+        listOf("no", "No grazie", "annulla", "aspetta un attimo", "ferma tutto", "sì, anzi no", "non confermo", "non procedere", "non inviarlo").forEach {
             assertEquals(it, false, MemyController.parseYesNo(it))
         }
     }

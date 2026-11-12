@@ -161,6 +161,14 @@ class TypeTextTool : MemyTool {
     )
     override val required = listOf("text")
 
+    // Invio fuori da una barra di ricerca può inviare un messaggio: va confermato come gli altri invii.
+    override suspend fun confirmationPrompt(input: ToolInput): String? {
+        if (input.bool("press_enter") != true) return null
+        val svc = service() ?: return null
+        val search = withContext(Dispatchers.Main) { svc.isSearchField(input.int("index")?.let { svc.element(it)?.node } ?: return@withContext svc.isSearchField()) }
+        return if (search) null else "Sto per scrivere «${input.string("text").orEmpty().take(120)}» e premere Invio, che potrebbe inviarlo. Confermi?"
+    }
+
     override suspend fun execute(input: ToolInput): ToolResult {
         val svc = service() ?: return ToolResult.error(NEED_ACCESSIBILITY)
         val text = input.requireString("text")
@@ -216,6 +224,12 @@ class PressButtonTool : MemyTool {
         ),
     )
     override val required = listOf("button")
+
+    override suspend fun confirmationPrompt(input: ToolInput): String? {
+        if (input.string("button") != "enter") return null
+        val svc = service() ?: return null
+        return if (withContext(Dispatchers.Main) { svc.isSearchField() }) null else "Sto per premere Invio, che potrebbe inviare il messaggio. Confermi?"
+    }
 
     override suspend fun execute(input: ToolInput): ToolResult {
         val svc = service() ?: return ToolResult.error(NEED_ACCESSIBILITY)

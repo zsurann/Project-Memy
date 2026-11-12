@@ -203,6 +203,14 @@ class MemyAccessibilityService : AccessibilityService() {
     }
 
     /** Preme "Invio" sulla tastiera (es. per avviare una ricerca). */
+    /** Il campo (indicato o con il cursore) è una barra di ricerca o di indirizzo? Lì Invio non manda niente a nessuno. */
+    fun isSearchField(node: AccessibilityNodeInfo? = activeRoot()?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)): Boolean {
+        node ?: return false
+        val hint = if (Build.VERSION.SDK_INT >= 26) node.hintText else null
+        val text = listOf(node.viewIdResourceName, hint, node.contentDescription, node.className).joinToString(" ").lowercase()
+        return listOf("search", "cerca", "ricerca", "query", "url", "address", "omnibox", "搜索").any { it in text }
+    }
+
     fun pressEnter(): Boolean {
         if (Build.VERSION.SDK_INT < 30) return false
         val focused = activeRoot()?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false

@@ -743,7 +743,7 @@ class MemyController(private val app: MemyApp) {
         internal fun parseYesNo(text: String): Boolean? {
             val t = Normalizer.normalize(text.lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{M}"), "")
             val words = t.split(Regex("[^a-z]+")).filter { it.isNotEmpty() }.toSet()
-            val no = setOf("no", "annulla", "stop", "aspetta", "fermo", "ferma", "lascia", "niente", "negativo", "nope")
+            val no = setOf("no", "non", "annulla", "stop", "aspetta", "fermo", "ferma", "lascia", "niente", "negativo", "nope")
             val yes = setOf(
                 "si", "certo", "conferma", "confermo", "ok", "okay", "vai", "procedi", "esatto", "invia", "chiama",
                 "sicuro", "giusto", "perfetto", "fallo", "certamente", "assolutamente", "yes",
