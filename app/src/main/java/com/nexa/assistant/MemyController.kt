@@ -439,6 +439,11 @@ class MemyController(private val app: MemyApp) {
             handoff?.release()
             return false
         }
+        // Mentre parli si preparano già le connessioni con Groq e Claude: la risposta arriva prima.
+        settings.groqKey()?.takeIf { it.isNotBlank() && stt === whisper }?.let { key ->
+            scope.launch(Dispatchers.IO) { groq.prewarm(key) }
+        }
+        settings.apiKey()?.let { agent.prewarm(it) }
         ensureSession()
         voice.stop()
         voice.stopPreview()
@@ -534,6 +539,7 @@ class MemyController(private val app: MemyApp) {
         finishStreamingLine()
         addLine(ChatLine(ids.incrementAndGet(), fromUser = true, text = clean))
         addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = "", streaming = true))
+        val attachment = pendingAttachment.also { pendingAttachment = null }
         agentBusy = true
         updateBarge()
         val runId = ++runSeq
@@ -541,7 +547,7 @@ class MemyController(private val app: MemyApp) {
             _state.update { it.copy(phase = Phase.THINKING, partial = "") }
             val s = settings.state.value
             val reply = try {
-                agent.run(clean, MemyAgent.Options(key, s.model, s.userName, s.webSearch, app.memory.items.value), interrupting)
+                agent.run(clean, MemyAgent.Options(key, s.model, s.userName, s.webSearch, app.memory.items.value), interrupting, attachment)
             } catch (e: MemyAgent.AgentException) {
                 (e.message ?: "Si è verificato un errore.").also { voice.enqueue(it) }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -698,7 +704,32 @@ class MemyController(private val app: MemyApp) {
         updateOverlay()
     }
 
+    /** Foto, PDF o link condiviso da un'altra app, in attesa della richiesta su cosa farne. */
+    private var pendingAttachment: MemyAgent.Attachment? = null
+
+    /**
+     * «Condividi con Memy»: tiene da parte ciò che è arrivato e chiede a voce cosa farne.
+     * @param what come chiamarlo a voce, es. "questo PDF"
+     */
+    fun onShared(attachment: MemyAgent.Attachment?, what: String, name: String) {
+        if (attachment == null) {
+            notice("Non so leggere questo tipo di file ($name).")
+            return
+        }
+        stopAll()
+        pendingAttachment = attachment
+        addLine(ChatLine(ids.incrementAndGet(), fromUser = true, text = "📎 $name"))
+        val question = "Cosa vuoi che faccia con $what?"
+        addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = question))
+        scope.launch {
+            spoke(question)
+            voice.speakNow(question)
+            if (_state.value.phase == Phase.IDLE) startListening()
+        }
+    }
+
     fun newConversation() {
+        pendingAttachment = null
         stopAll()
         agent.resetConversation()
         _state.update { it.copy(lines = emptyList()) }

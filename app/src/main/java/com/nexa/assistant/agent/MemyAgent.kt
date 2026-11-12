@@ -13,6 +13,10 @@ import com.anthropic.errors.RateLimitException
 import com.anthropic.errors.UnauthorizedException
 import com.anthropic.helpers.MessageAccumulator
 import com.anthropic.models.messages.Base64ImageSource
+import com.anthropic.models.messages.Base64PdfSource
+import com.anthropic.models.messages.DocumentBlockParam
+import com.anthropic.models.messages.ImageBlockParam
+import com.anthropic.models.messages.TextBlockParam
 import com.anthropic.models.messages.CacheControlEphemeral
 import com.anthropic.models.messages.ContentBlockParam
 import com.anthropic.models.messages.Message
@@ -92,7 +96,7 @@ class MemyAgent(
     /** Una richiesta alla volta: una nuova aspetta che quella annullata abbia rimesso in ordine la cronologia. */
     private val turn = Mutex()
 
-    private val toolDefs: List<Tool> by lazy { tools.map(::toApiTool) }
+    private val toolDefs: List<Tool> by lazy { (tools + EscalateTool).map(::toApiTool) }
 
     fun resetConversation() {
         history.clear()
@@ -101,11 +105,43 @@ class MemyAgent(
     /**
      * @param interrupting l'utente ha parlato mentre Memy stava ancora lavorando alla richiesta precedente
      */
-    suspend fun run(userText: String, options: Options, interrupting: Boolean = false): String = withContext(Dispatchers.IO) {
-        turn.withLock { runTurn(userText, options, interrupting) }
+    /** Qualcosa condiviso da un'altra app, allegato alla richiesta. */
+    sealed interface Attachment {
+        class Image(val jpeg: ByteArray) : Attachment
+        class Pdf(val bytes: ByteArray) : Attachment
+        class Text(val name: String, val text: String) : Attachment
     }
 
-    private suspend fun runTurn(userText: String, options: Options, interrupting: Boolean): String {
+    /** Modello usato in questo momento: in automatico parte da Haiku e può salire a Sonnet durante la richiesta. */
+    @Volatile private var turnModel = ClaudeModel.HAIKU
+    private var autoModel = false
+    private var lastWarm = 0L
+
+    /** Apre in anticipo la connessione con Claude (nessun costo in token), così la prima risposta arriva prima. */
+    fun prewarm(apiKey: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastWarm < 60_000) return
+        lastWarm = now
+        Thread({ runCatching { clientFor(apiKey).models().list() } }, "memy-warm-claude").start()
+    }
+
+    private fun escalate() {
+        if (autoModel && turnModel == ClaudeModel.HAIKU) turnModel = ClaudeModel.SONNET
+    }
+
+    /**
+     * @param interrupting l'utente ha parlato mentre Memy stava ancora lavorando alla richiesta precedente
+     * @param attachment foto, PDF o testo condiviso da un'altra app
+     */
+    suspend fun run(
+        userText: String, options: Options, interrupting: Boolean = false, attachment: Attachment? = null,
+    ): String = withContext(Dispatchers.IO) {
+        turn.withLock { runTurn(userText, options, interrupting, attachment) }
+    }
+
+    private suspend fun runTurn(userText: String, options: Options, interrupting: Boolean, attachment: Attachment?): String {
+        autoModel = options.model == ClaudeModel.AUTO
+        turnModel = if (autoModel) ClaudeModel.HAIKU else options.model
         val now = System.currentTimeMillis()
         if (now - lastActivity > CONVERSATION_TIMEOUT_MS) history.clear() else trimHistory()
         lastActivity = now
@@ -113,7 +149,9 @@ class MemyAgent(
         val api = clientFor(options.apiKey)
         val checkpoint = history.size
         val note = if (interrupting) " [Ti ho interrotta mentre lavoravi: quello che dico ora corregge o sostituisce la richiesta di prima.]" else ""
-        history += MessageParam.ofUser("${SystemPrompt.timeContext()}$note $userText")
+        val text = "${SystemPrompt.timeContext()}$note $userText"
+        history += if (attachment == null) MessageParam.ofUser(text)
+        else MessageParam.ofUserOfContentBlockParams(listOf(attachmentBlock(attachment), ContentBlockParam.ofText(TextBlockParam.builder().text(text).build())))
         // Se l'utente interrompe, si conserva tutto fino all'ultimo passaggio completato: così Memy sa cosa stava facendo.
         var safePoint = history.size
         val spoken = StringBuilder()
@@ -265,6 +303,23 @@ class MemyAgent(
         return accumulator.message()
     }
 
+    private fun attachmentBlock(a: Attachment): ContentBlockParam = when (a) {
+        is Attachment.Image -> ContentBlockParam.ofImage(
+            ImageBlockParam.builder().source(
+                Base64ImageSource.builder().mediaType(Base64ImageSource.MediaType.IMAGE_JPEG)
+                    .data(Base64.getEncoder().encodeToString(a.jpeg)).build()
+            ).build()
+        )
+        is Attachment.Pdf -> ContentBlockParam.ofDocument(
+            DocumentBlockParam.builder().source(
+                Base64PdfSource.builder().data(Base64.getEncoder().encodeToString(a.bytes)).build()
+            ).build()
+        )
+        is Attachment.Text -> ContentBlockParam.ofText(
+            TextBlockParam.builder().text("Contenuto condiviso (${a.name}):\n${a.text.take(40_000)}").build()
+        )
+    }
+
     /** In caso di errore si torna allo stato precedente, così la cronologia resta valida. */
     private fun rollback(checkpoint: Int) {
         while (history.size > checkpoint) history.removeAt(history.lastIndex)
@@ -319,13 +374,15 @@ class MemyAgent(
 
     @Suppress("UNCHECKED_CAST")
     private suspend fun executeTool(block: ToolUseBlock): ToolResult {
-        val tool = tools.firstOrNull { it.name == block.name() }
+        val tool = (tools + EscalateTool).firstOrNull { it.name == block.name() }
             ?: return ToolResult.error("Strumento sconosciuto: ${block.name()}")
         val input = try {
             ToolInput(block._input().convert(Map::class.java) as? Map<String, Any?> ?: emptyMap())
         } catch (e: Exception) {
             return ToolResult.error("Parametri non validi: ${e.message}")
         }
+        if (tool.name == ESCALATE || tool.name in SCREEN_TOOLS) escalate()
+        if (tool.name == ESCALATE) return ToolResult.ok("Ora sei il modello più capace: continua tu la richiesta.")
         hooks.onToolUse(tool.name)
         hooks.beforeTool()
         return try {
@@ -346,8 +403,9 @@ class MemyAgent(
     }
 
     private fun buildParams(o: Options): MessageCreateParams {
+        val model = turnModel
         val builder = MessageCreateParams.builder()
-            .model(o.model.id)
+            .model(model.id)
             .maxTokens(16000L)
             .system(SystemPrompt.build(o.userName, o.webSearch, o.memories))
             .messages(history.toList())
@@ -357,25 +415,26 @@ class MemyAgent(
             .cacheControl(CacheControlEphemeral.builder().build())
         // Per la voce conta la rapidità: Sonnet e Haiku rispondono senza la fase di ragionamento iniziale
         // (Opus invece ragiona sempre). Sonnet 5.5 usa "between_tools", Haiku 5.5 "disabled".
-        when (o.model) {
+        when (model) {
             ClaudeModel.SONNET -> builder.putAdditionalBodyProperty("thinking", JsonValue.from(mapOf("type" to "between_tools")))
             ClaudeModel.HAIKU -> builder.putAdditionalBodyProperty("thinking", JsonValue.from(mapOf("type" to "disabled")))
-            ClaudeModel.OPUS -> Unit
+            else -> Unit
         }
-        toolDefs.forEach { builder.addTool(it) }
+        // Lo strumento per "salire" a Sonnet serve solo a Haiku in modalità automatica.
+        toolDefs.filter { it.name() != ESCALATE || (autoModel && model == ClaudeModel.HAIKU) }.forEach { builder.addTool(it) }
         if (o.webSearch) {
             val location = UserLocation.builder()
                 .country(Locale.getDefault().country.ifBlank { "IT" })
                 .timezone(ZoneId.systemDefault().id)
                 .build()
             // Haiku usa la versione base della ricerca web; Opus e Sonnet quella con filtro dinamico dei risultati.
-            if (o.model == ClaudeModel.HAIKU) {
+            if (model == ClaudeModel.HAIKU) {
                 builder.addTool(WebSearchTool20250305.builder().maxUses(3L).userLocation(location).build())
             } else {
                 builder.addTool(WebSearchTool20260209.builder().maxUses(3L).userLocation(location).build())
             }
         }
-        if (o.model != ClaudeModel.HAIKU) {
+        if (model != ClaudeModel.HAIKU) {
             // Se Claude rifiuta per un falso allarme di sicurezza, il server riprova con un modello alternativo.
             builder.putAdditionalHeader("anthropic-beta", "server-side-fallback-2026-07-01")
             builder.putAdditionalBodyProperty("fallbacks", JsonValue.from("default"))
@@ -423,11 +482,25 @@ class MemyAgent(
         else -> "Errore dal servizio Claude (${e.statusCode()}): ${e.message}"
     }
 
-    private companion object {
-        const val MAX_STEPS = 40
-        /** Oltre questa lunghezza il testo è chiaramente una risposta, non una frase di circostanza: si inizia a leggerlo. */
-        const val SPEAK_AFTER_CHARS = 220
+    companion object {
+        private const val MAX_STEPS = 40
+        /** 0 = la prima frase si legge subito (scelta dell'utente per la velocità); se poi parte uno strumento la voce si ferma. */
+        const val SPEAK_AFTER_CHARS = 0
+        const val ESCALATE = "think_harder"
+        /** Usare le app sullo schermo richiede il modello più capace. */
+        val SCREEN_TOOLS = setOf("read_screen", "look_at_screen", "tap_element", "tap_position", "type_text", "scroll")
         const val MAX_HISTORY = 80
         const val CONVERSATION_TIMEOUT_MS = 15 * 60 * 1000L
     }
+}
+
+/** Haiku chiede di passare il lavoro a Sonnet (solo in modalità automatica). */
+private object EscalateTool : MemyTool {
+    override val name = MemyAgent.ESCALATE
+    override val description =
+        "Passa la richiesta a un modello più capace. Chiamalo SUBITO, senza scrivere nulla, se la richiesta richiede di usare " +
+            "app sullo schermo, più di due passaggi, un ragionamento attento, scrivere un documento o un testo lungo."
+    override val properties = emptyMap<String, Map<String, Any>>()
+    override val required = emptyList<String>()
+    override suspend fun execute(input: ToolInput) = ToolResult.ok("ok")
 }

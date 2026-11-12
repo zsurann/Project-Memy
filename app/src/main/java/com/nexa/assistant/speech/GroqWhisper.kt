@@ -22,6 +22,18 @@ class GroqWhisper(private val baseUrl: String = "https://api.groq.com/openai/v1"
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
+    @Volatile private var lastWarm = 0L
+
+    /** Apre in anticipo la connessione con Groq (nessun costo), così la trascrizione arriva prima. Bloccante. */
+    fun prewarm(key: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastWarm < 60_000) return
+        lastWarm = now
+        runCatching {
+            http.newCall(Request.Builder().url("$baseUrl/models").header("Authorization", "Bearer $key").build()).execute().close()
+        }
+    }
+
     /** Bloccante. [prompt] aiuta Whisper con stile e parole insolite (nomi, app). */
     fun transcribe(samples: FloatArray, key: String, prompt: String = DEFAULT_PROMPT): String {
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)

@@ -100,8 +100,8 @@ class MemyAgentTest {
 
         val reply = agent(torch, hooks).run("accendi la torcia", opts())
 
-        // "Certo, accendo la torcia." accompagna uno strumento: Memy lavora in silenzio e non la legge.
-        assertEquals(listOf("Ecco fatto, la torcia è accesa!", "Serve altro?"), hooks.sentences)
+        // La prima frase si legge subito (velocità); quando parte lo strumento è la voce a fermarsi.
+        assertEquals(listOf("Certo, accendo la torcia.", "Ecco fatto, la torcia è accesa!", "Serve altro?"), hooks.sentences)
         assertEquals("Ecco fatto, la torcia è accesa! Serve altro?", reply)
         assertEquals(1, torch.calls.size)
         assertEquals(true, torch.calls[0].bool("on"))
@@ -220,5 +220,35 @@ class MemyAgentTest {
         } catch (e: MemyAgent.AgentException) {
             assertTrue(e.message!!.contains("chiave API non è valida"))
         }
+    }
+
+    @Test
+    fun autoModeStartsWithHaikuAndEscalatesToSonnet() = runBlocking {
+        server.enqueue(sse(
+            start("claude-haiku-5-5"),
+            blockStart(0, """{"type":"tool_use","id":"toolu_up","name":"think_harder","input":{}}"""),
+            delta(0, JSONObject().put("type", "input_json_delta").put("partial_json", "{}")),
+            blockStop(0),
+            end("tool_use"), stop,
+        ))
+        server.enqueue(finalStream())
+        val reply = agent(FakeTorch(), Hooks(true)).run("scrivimi una lettera di dimissioni", opts(model = ClaudeModel.AUTO))
+        assertTrue(reply.contains("Serve altro?"))
+        val first = JSONObject(server.takeRequest().body.readUtf8())
+        assertEquals("claude-haiku-5-5", first.getString("model"))
+        assertTrue("Haiku può salire", toolNames(first.getJSONArray("tools")).contains("think_harder"))
+        val second = JSONObject(server.takeRequest().body.readUtf8())
+        assertEquals("claude-sonnet-5-5", second.getString("model"))
+        assertTrue("Sonnet non sale oltre", !toolNames(second.getJSONArray("tools")).contains("think_harder"))
+    }
+
+    @Test
+    fun sharedPdfIsSentAsDocument() = runBlocking {
+        server.enqueue(finalStream())
+        agent(FakeTorch(), Hooks(true)).run("riassumilo", opts(), attachment = MemyAgent.Attachment.Pdf("%PDF-1.4".toByteArray()))
+        val content = JSONObject(server.takeRequest().body.readUtf8()).getJSONArray("messages").getJSONObject(0).getJSONArray("content")
+        assertEquals("document", content.getJSONObject(0).getString("type"))
+        assertEquals("application/pdf", content.getJSONObject(0).getJSONObject("source").getString("media_type"))
+        assertTrue(content.getJSONObject(1).getString("text").endsWith("riassumilo"))
     }
 }

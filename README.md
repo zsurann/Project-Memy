@@ -54,6 +54,8 @@ serve il tuo sì.
 - **Strada** — ti dice dove sei e ti porta dove vuoi andare.
 - **Documenti** — scrive per te PDF, file Word, tabelle e pagine curate («fammi un PDF con la lista della spesa»),
   li modifica quando cambi idea, te li apre o li manda a chi vuoi. Se glielo permetti, legge anche i tuoi PDF e Word.
+- **Condividi con Memy** — da qualsiasi app manda a Memy una foto, un PDF, un documento o un link: lei ti chiede cosa
+  farne e ti risponde («riassumilo», «cosa c'è scritto?», «traducimelo»).
 - **Piccole cose** — torcia, volume, musica, silenzioso, Non disturbare, fotocamera.
 
 ## Una conversazione vera
@@ -64,7 +66,12 @@ risposta resta in ascolto: puoi continuare senza richiamarla.
 Se sta parlando o lavorando e vuoi cambiare qualcosa, **parlale sopra**. Ascolta tutta la frase e, se hai detto
 qualcosa di concreto, si ferma e ti segue; un rumore o un colpo di tosse non la interrompono.
 
-E si ricorda di te. Dille una volta «mia sorella si chiama Giulia» e la prossima volta saprà a chi scrivere.
+E si ricorda di te, da sola. Quando le racconti qualcosa di importante («mia sorella si chiama Giulia») lo annota con
+un «me lo segno» e se ne ricorderà nelle conversazioni future. I ricordi restano sul telefono e li puoi cancellare
+quando vuoi.
+
+Risponde in fretta: per le cose semplici usa un modello rapidissimo e passa da sola a uno più capace quando il compito
+lo richiede.
 
 ## Aurora, il nuovo volto di Memy
 

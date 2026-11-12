@@ -9,8 +9,9 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /** Modelli Claude selezionabili. */
 enum class ClaudeModel(val id: String, val label: String, val description: String) {
+    AUTO("auto", "Automatico", "Veloce di base (Haiku); passa da sola a Sonnet per i compiti difficili. Consigliato."),
     OPUS("claude-opus-5-5", "Opus 5.5", "Il più intelligente, ma il più lento a rispondere: ragiona sempre prima di parlare."),
-    SONNET("claude-sonnet-5-5", "Sonnet 5.5", "Intelligente e rapido: il migliore per parlare a voce. Consigliato."),
+    SONNET("claude-sonnet-5-5", "Sonnet 5.5", "Intelligente e rapido, sempre."),
     HAIKU("claude-haiku-5-5", "Haiku 5.5", "Il più veloce ed economico, meno profondo."),
 }
 
@@ -73,7 +74,7 @@ class MemySettings(context: Context) {
     private fun read() = SettingsState(
         hasApiKey = prefs.contains(KEY_API),
         hasGroqKey = prefs.contains(KEY_GROQ),
-        model = enumPref(KEY_MODEL, ClaudeModel.OPUS),
+        model = enumPref(KEY_MODEL, ClaudeModel.AUTO),
         sttEngine = enumPref(KEY_STT, SttEngine.AUTO),
         voiceId = prefs.getString(KEY_VOICE_ID, null) ?: DefaultVoice.ID,
         voiceName = prefs.getString(KEY_VOICE_NAME, null) ?: DefaultVoice.NAME,
