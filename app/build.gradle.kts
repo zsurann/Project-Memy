@@ -46,7 +46,8 @@ android {
         // del repository, poi quello storico: funziona sia prima sia dopo la rinomina su GitHub.
         buildConfigField(
             "String", "UPDATE_BASE_URLS",
-            "\"https://github.com/zsurann/Memy/releases/download/ultima-versione," +
+            "\"https://github.com/zsurann/Project-Memy/releases/download/ultima-versione," +
+                "https://github.com/zsurann/Memy/releases/download/ultima-versione," +
                 "https://github.com/zsurann/Project-Nexa/releases/download/ultima-versione\"",
         )
     }

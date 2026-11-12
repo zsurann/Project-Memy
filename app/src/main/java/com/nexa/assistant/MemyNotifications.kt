@@ -18,7 +18,7 @@ object MemyNotifications {
     private fun largeIcon(context: Context): Bitmap? {
         largeIcon?.let { return it }
         return runCatching {
-            val d = ContextCompat.getDrawable(context, R.mipmap.ic_launcher)!!
+            val d = ContextCompat.getDrawable(context, R.drawable.memy_app_icon)!!
             val px = (context.resources.displayMetrics.density * 64).toInt().coerceAtLeast(96)
             val bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bmp)
