@@ -54,7 +54,11 @@ class MemyRecognitionService : RecognitionService() {
 
     override fun onStartListening(recognizerIntent: Intent, listener: Callback) {
         finish()
-        val stt = if (controller.state.value.phase == Phase.IDLE && controller.hasMicPermission()) controller.newDictationEngine() else null
+        // Il microfono va aperto per conto dell'app che chiede la dettatura, altrimenti Android può darlo muto.
+        val ctx = if (android.os.Build.VERSION.SDK_INT >= 31) {
+            createContext(android.content.ContextParams.Builder().setNextAttributionSource(listener.callingAttributionSource).build())
+        } else this
+        val stt = if (controller.state.value.phase == Phase.IDLE && controller.hasMicPermission()) controller.newDictationEngine(ctx) else null
         if (stt == null) {
             runCatching {
                 listener.error(if (controller.state.value.phase != Phase.IDLE) SpeechRecognizer.ERROR_RECOGNIZER_BUSY else SpeechRecognizer.ERROR_CLIENT)
@@ -90,7 +94,7 @@ class MemyRecognitionService : RecognitionService() {
     }
 
     private fun finish() {
-        engine?.stop()
+        engine?.release()
         engine = null
         controller.dictating.value = false
     }

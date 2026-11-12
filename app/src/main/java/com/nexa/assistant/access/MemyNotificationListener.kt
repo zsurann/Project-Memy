@@ -75,7 +75,17 @@ class MemyNotificationListener : NotificationListenerService() {
     /** Apre l'app/schermata collegata alla notifica. */
     fun open(key: String): Boolean {
         val sbn = visible().firstOrNull { it.key == key } ?: return false
-        return runCatching { sbn.notification.contentIntent?.send(); true }.getOrDefault(false)
+        val pi = sbn.notification.contentIntent ?: return false
+        // Da Android 14 un'apertura avviata dal background va permessa esplicitamente.
+        val options = android.app.ActivityOptions.makeBasic().apply {
+            if (android.os.Build.VERSION.SDK_INT >= 36) {
+                setPendingIntentBackgroundActivityStartMode(android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS)
+            } else if (android.os.Build.VERSION.SDK_INT >= 34) {
+                @Suppress("DEPRECATION")
+                setPendingIntentBackgroundActivityStartMode(android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+            }
+        }.toBundle()
+        return runCatching { pi.send(this, 0, null, null, null, null, options); true }.getOrDefault(false)
     }
 
     /** Titolo e artista del brano in riproduzione, se c'è. */

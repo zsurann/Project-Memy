@@ -135,8 +135,8 @@ class SetAlarmTool(private val ctx: Context) : MemyTool {
     override val required = listOf("hour", "minute")
 
     override suspend fun execute(input: ToolInput): ToolResult {
-        val hour = input.int("hour") ?: return ToolResult.error("Ora mancante")
-        val minute = input.int("minute") ?: 0
+        val hour = input.int("hour")?.takeIf { it in 0..23 } ?: return ToolResult.error("Ora mancante o non valida (0-23)")
+        val minute = (input.int("minute") ?: 0).takeIf { it in 0..59 } ?: return ToolResult.error("Minuti non validi (0-59)")
         val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
             putExtra(AlarmClock.EXTRA_HOUR, hour)
             putExtra(AlarmClock.EXTRA_MINUTES, minute)
@@ -179,6 +179,7 @@ internal object Contacts {
     fun search(ctx: Context, query: String): List<Entry> {
         if (!ctx.hasPermission(Manifest.permission.READ_CONTACTS)) throw SecurityException("permesso contatti")
         val q = normalize(query)
+        if (q.isBlank()) return emptyList()
         val out = mutableListOf<Entry>()
         ctx.contentResolver.query(
             ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
@@ -391,8 +392,8 @@ class MediaControlTool(private val ctx: Context) : MemyTool {
 class OpenSettingsTool(private val ctx: Context) : MemyTool {
     override val name = "open_settings"
     override val description =
-        "Apre una schermata delle impostazioni di sistema. Da Android 10 le app non possono accendere Wi-Fi/Bluetooth da sole: " +
-            "per quelle apri il pannello e di' all'utente di toccare l'interruttore."
+        "Apre una schermata delle impostazioni di sistema. Per accendere o spegnere Wi-Fi e Bluetooth usa prima press_button " +
+            "quick_settings e tocca l'interruttore; solo se il controllo dello schermo non è attivo apri il pannello e di' all'utente di toccarlo."
     private val sections = mapOf(
         "wifi" to Settings.Panel.ACTION_WIFI,
         "internet" to Settings.Panel.ACTION_INTERNET_CONNECTIVITY,

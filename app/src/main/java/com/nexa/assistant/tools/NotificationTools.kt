@@ -80,6 +80,7 @@ class DismissNotificationsTool : MemyTool {
     override val description = "Cancella una notifica (con il suo numero) oppure tutte le notifiche (senza numero)."
     override val properties = mapOf("index" to prop("integer", "Numero della notifica; ometti per cancellarle tutte"))
     override val required = emptyList<String>()
+    override suspend fun confirmationPrompt(input: ToolInput) = if (input.int("index") == null) "Cancello tutte le notifiche?" else null
     override suspend fun execute(input: ToolInput): ToolResult {
         val svc = MemyNotificationListener.instance ?: return ToolResult.error(NEED_NOTIFICATIONS)
         val index = input.int("index")

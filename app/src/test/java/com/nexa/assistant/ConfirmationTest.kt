@@ -31,6 +31,8 @@ class StopWordTest {
         org.junit.Assert.assertTrue(MemyController.isStopWord("Ferma!"))
         org.junit.Assert.assertTrue(MemyController.isStopWord("Basta così."))
         org.junit.Assert.assertTrue(MemyController.isStopWord("lascia stare"))
+        org.junit.Assert.assertTrue(MemyController.isStopWord("Stai zitta!"))
+        org.junit.Assert.assertTrue(MemyController.isStopWord("Silenzio."))
         org.junit.Assert.assertFalse(MemyController.isStopWord("Ferma la musica"))
         org.junit.Assert.assertFalse(MemyController.isStopWord("No, scrivi a Giulia invece"))
     }

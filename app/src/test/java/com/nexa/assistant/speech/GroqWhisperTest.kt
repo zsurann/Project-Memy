@@ -74,9 +74,19 @@ class GroqWhisperTest {
         for (real in listOf("Ferma!", "sì", "No.", "Scrivi a Giulia", "aspetta un attimo", "che ore sono?")) {
             assertTrue(real, SpokenWords.isMeaningful(real))
         }
-        for (noise in listOf("", "Eh.", "Mmm", "ehm, ah", "Oh!", "a", "uh e", "ah oh", "mh, boh")) {
+        assertTrue(SpokenWords.isMeaningful("Torcia!"))
+        assertTrue(SpokenWords.isMeaningful("pausa"))
+        for (noise in listOf("", "Eh.", "Mmm", "ehm, ah", "Oh!", "a", "uh e", "ah oh", "mh, boh", "Grazie.", "Ciao!")) {
             assertTrue(noise, !SpokenWords.isMeaningful(noise))
         }
+    }
+
+    @Test
+    fun promptEchoIsDropped() {
+        val prompt = GroqWhisper.DEFAULT_PROMPT
+        assertTrue(GroqWhisper.echoesPrompt("Apri WhatsApp e scrivi a Marco che arrivo tra dieci minuti.", prompt))
+        assertTrue(!GroqWhisper.echoesPrompt("Apri WhatsApp", prompt))
+        assertTrue(!GroqWhisper.echoesPrompt("Scrivi a Giulia che arrivo tra dieci minuti", prompt))
     }
 
     @Test

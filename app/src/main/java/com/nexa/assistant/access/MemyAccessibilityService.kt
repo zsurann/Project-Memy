@@ -168,7 +168,25 @@ class MemyAccessibilityService : AccessibilityService() {
         return gesture(GestureDescription.StrokeDescription(path, 0, durationMs))
     }
 
-    private suspend fun gesture(stroke: GestureDescription.StrokeDescription): Boolean =
+    /** Durante i gesti di Memy l'indicatore "Memy al lavoro" non deve ricevere il tocco (la fermerebbe). */
+    private fun statusTouchable(on: Boolean) {
+        val v = statusView ?: return
+        val lp = v.layoutParams as? WindowManager.LayoutParams ?: return
+        lp.flags = if (on) lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        else lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        runCatching { getSystemService(WindowManager::class.java).updateViewLayout(v, lp) }
+    }
+
+    private suspend fun gesture(stroke: GestureDescription.StrokeDescription): Boolean {
+        statusTouchable(false)
+        try {
+            return dispatch(stroke)
+        } finally {
+            statusTouchable(true)
+        }
+    }
+
+    private suspend fun dispatch(stroke: GestureDescription.StrokeDescription): Boolean =
         suspendCancellableCoroutine { cont ->
             val ok = dispatchGesture(
                 GestureDescription.Builder().addStroke(stroke).build(),

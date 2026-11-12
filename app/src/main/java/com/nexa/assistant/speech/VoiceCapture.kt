@@ -66,11 +66,16 @@ class VoiceCapture(private val context: Context) {
         val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val record = handoff ?: try {
             // VOICE_RECOGNITION: audio pensato per il riconoscimento vocale, senza effetti che lo distorcono.
-            AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                maxOf(minBuf, SAMPLE_RATE * 2 * 2),
-            )
+            AudioRecord.Builder()
+                .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+                .setAudioFormat(
+                    AudioFormat.Builder().setSampleRate(SAMPLE_RATE)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build()
+                )
+                .setBufferSizeInBytes(maxOf(minBuf, SAMPLE_RATE * 2 * 2))
+                // Per la dettatura nelle altre app il contesto porta l'app che la chiede (Android 12+).
+                .apply { if (android.os.Build.VERSION.SDK_INT >= 31) setContext(context) }
+                .build()
         } catch (e: Exception) {
             vad.release()
             return Result.Failed("microfono non disponibile: ${e.message}")

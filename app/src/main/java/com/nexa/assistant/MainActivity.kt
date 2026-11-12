@@ -30,6 +30,8 @@ class MainActivity : ComponentActivity() {
 
     private val app get() = application as MemyApp
     private var listenWhenGranted = false
+    /** Richiesta di ascolto (riquadro, tasto assistente) da gestire appena l'app è visibile. */
+    private var pendingLaunch: Intent? = null
 
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted && listenWhenGranted) app.controller.startListening()
@@ -65,7 +67,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        handleLaunch(intent)
+        // Si gestisce in onResume: qui l'app non è ancora "visibile" e il microfono non partirebbe.
+        if (savedInstanceState == null) pendingLaunch = intent
     }
 
     override fun onStart() {
@@ -82,7 +85,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        lifecycleScope.launch {
+        pendingLaunch?.let { pendingLaunch = null; handleLaunch(it) }
+        // Nello scope dell'aggiornamento, non della schermata: chiudere l'app non lo interrompe a metà.
+        app.updates.scope.launch {
             val st = app.updates.state.value
             if (st is UpdateManager.State.NeedsPermission && packageManager.canRequestPackageInstalls()) {
                 app.updates.downloadAndInstall(st.release)
@@ -94,7 +99,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleLaunch(intent)
+        pendingLaunch = intent
     }
 
     /** Avviata dal riquadro rapido, dal tasto assistente o da un comando vocale: inizia subito ad ascoltare. */

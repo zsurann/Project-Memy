@@ -137,11 +137,13 @@ object Echo {
 object SpokenWords {
     private val FILLERS = setOf(
         "eh", "ehm", "uhm", "um", "uh", "ah", "oh", "mh", "mm", "mmm", "hm", "hmm", "boh", "beh", "ehi", "ok", "okay", "si", "no",
+        // Whisper le "sente" spesso nei rumori: da sole non bastano per interrompere.
+        "grazie", "ciao",
     )
     /** Brevi risposte che hanno senso anche da sole. */
     private val SHORT = setOf(
         "si", "no", "ferma", "fermati", "stop", "basta", "aspetta", "annulla", "certo", "esatto", "giusto", "vai", "procedi",
-        "conferma", "confermo", "perfetto", "ok", "okay", "grazie", "smetti", "zitta", "silenzio", "alt",
+        "conferma", "confermo", "perfetto", "ok", "okay", "smetti", "zitta", "silenzio", "alt",
     )
 
     private fun words(s: String) = java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
@@ -152,6 +154,7 @@ object SpokenWords {
         if (all.isEmpty()) return false
         if (all.size <= 2 && all.all { it in SHORT }) return true
         val real = all.filter { it !in FILLERS && it.length >= 2 }
-        return real.size >= 2 && real.sumOf { it.length } >= 7
+        // Un comando di una parola sola ("torcia", "pausa") vale se è una parola vera e non un verso.
+        return (real.size >= 2 && real.sumOf { it.length } >= 7) || (all.size == 1 && real.singleOrNull()?.let { it.length >= 4 } == true)
     }
 }

@@ -252,6 +252,10 @@ class LocationTool(private val ctx: Context) : MemyTool {
             }
             if (fresh != null) best = fresh
         }
+        val old = best == null || System.currentTimeMillis() - best.time > 10 * 60_000L
+        if (old && (ctx.applicationContext as? com.nexa.assistant.MemyApp)?.controller?.inForeground == false) {
+            return ToolResult.error("Con Memy in background Android non dà la posizione aggiornata: di' all'utente di aprire Memy e riprovare.")
+        }
         val loc = best ?: return ToolResult.error("Posizione non disponibile in questo momento.")
         val address = runCatching {
             if (!Geocoder.isPresent()) null

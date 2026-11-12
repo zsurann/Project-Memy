@@ -77,7 +77,7 @@ object SystemPrompt {
             )
         } else {
             appendLine(
-                "La ricerca web è disattivata: per notizie o fatti recenti dillo con onestà e, se utile, proponi di aprire una ricerca nel browser."
+                "La ricerca web è disattivata: per notizie o fatti recenti dillo con onestà."
             )
         }
         if (userName.isNotBlank()) {

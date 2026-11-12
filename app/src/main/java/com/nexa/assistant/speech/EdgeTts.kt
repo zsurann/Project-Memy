@@ -219,7 +219,7 @@ class EdgeTts(
     }
 
     companion object {
-        private const val TIMEOUT_SECONDS = 25L
+        private const val TIMEOUT_SECONDS = 8L
         private const val MAX_IDLE_MS = 20_000L
         private const val BASE_URL = "speech.platform.bing.com/consumer/speech/synthesize/readaloud"
         internal const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"

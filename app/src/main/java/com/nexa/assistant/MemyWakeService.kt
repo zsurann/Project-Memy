@@ -92,11 +92,15 @@ class MemyWakeService : Service() {
                 detector.start(
                     sensitivity,
                     onDetected = { recorder ->
-                        scope.launch {
+                        val taken = java.util.concurrent.atomic.AtomicBoolean(false)
+                        val job = scope.launch {
+                            taken.set(true)
                             val listening = running && controller.onWakeWord(recorder)
                             if (!running) runCatching { recorder.release() }
                             if (!listening) retryLater()
                         }
+                        // Se il servizio si chiude prima che il registratore venga preso in carico, il microfono va liberato.
+                        job.invokeOnCompletion { if (!taken.get()) runCatching { recorder.release() } }
                     },
                     onError = { scope.launch { retryLater() } },
                 )

@@ -86,4 +86,10 @@ class CaptureSpeechToText(
     override fun stop() {
         session++
     }
+
+    /** Fine dell'uso: chiude anche il thread dei testi parziali. */
+    override fun release() {
+        stop()
+        partialExecutor.shutdown()
+    }
 }

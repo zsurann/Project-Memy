@@ -90,6 +90,7 @@ class VoicePlayer(
         scope.launch { runCatching { player?.setVolume(volume, volume) } }
     }
     private var lastFallbackNotice = 0L
+    @Volatile private var edgeDownUntil = 0L
 
     private var tts: TextToSpeech? = null
     private val ttsReady = CompletableDeferred<Boolean>()
@@ -202,12 +203,15 @@ class VoicePlayer(
         scope.launch(Dispatchers.IO) { runCatching { edge.prewarm() } }
     }
 
+    /** Mette in coda una frase. Si può chiamare da qualsiasi thread: il conteggio avviene sul thread principale, come [stop]. */
     fun enqueue(text: String) {
         val clean = cleanForSpeech(text)
         if (clean.isBlank()) return
-        if (_preview.value != null) scope.launch { stopPreview() }
-        pending.update { it + 1 }
-        incoming.trySend(generation to clean)
+        scope.launch {
+            if (_preview.value != null) stopPreview()
+            pending.update { it + 1 }
+            incoming.trySend(generation to clean)
+        }
     }
 
     /** Aspetta che tutte le frasi in coda siano state lette. */
@@ -236,6 +240,8 @@ class VoicePlayer(
             val s = settings.state.value
             val job = scope.async(Dispatchers.IO) {
                 runCatching {
+                    // Servizio appena fallito: per un minuto si usa subito la voce del telefono, senza lunghe attese.
+                    if (System.currentTimeMillis() < edgeDownUntil) throw EdgeTtsException("servizio vocale non raggiungibile")
                     val bytes = try {
                         edge.synthesize(text, s.voiceId, s.voiceRate, s.voicePitch)
                     } catch (e: EdgeTtsException) {
@@ -266,6 +272,7 @@ class VoicePlayer(
                     onSuccess = { file -> playFile(file); file.delete() },
                     onFailure = { e ->
                         val now = System.currentTimeMillis()
+                        edgeDownUntil = now + 60_000
                         if (now - lastFallbackNotice > 60_000) {
                             lastFallbackNotice = now
                             onFallback?.invoke("Voce non disponibile (${e.message}). Uso per ora la voce del telefono.")

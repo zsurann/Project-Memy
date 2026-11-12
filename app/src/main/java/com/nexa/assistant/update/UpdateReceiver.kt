@@ -18,7 +18,26 @@ class UpdateReceiver : BroadcastReceiver() {
                 } else {
                     @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_INTENT)
                 }
-                confirm?.let { context.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                confirm ?: return
+                val app = context.applicationContext as? MemyApp
+                if (app?.controller?.inForeground == true) {
+                    context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } else {
+                    // Dal background Android non lascia aprire la conferma: la si offre con una notifica.
+                    val nm = context.getSystemService(android.app.NotificationManager::class.java)
+                    nm.createNotificationChannel(android.app.NotificationChannel("aggiornamenti", "Aggiornamenti", android.app.NotificationManager.IMPORTANCE_DEFAULT))
+                    val pi = android.app.PendingIntent.getActivity(
+                        context, 7, confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+                    )
+                    val n = com.nexa.assistant.MemyNotifications.builder(context, "aggiornamenti")
+                        .setContentTitle("Aggiornamento di Memy pronto")
+                        .setContentText("Tocca per installarlo")
+                        .setAutoCancel(true)
+                        .setContentIntent(pi)
+                        .build()
+                    runCatching { nm.notify(45, n) }
+                }
             }
             PackageInstaller.STATUS_SUCCESS -> Unit // l'app viene riavviata dal sistema
             else -> {

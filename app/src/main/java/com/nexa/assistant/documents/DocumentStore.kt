@@ -60,15 +60,22 @@ class DocumentStore(private val context: Context) {
     fun save(fileName: String, format: DocFormat, title: String?, content: String): Saved {
         val bytes = render(format, title, content)
         val uri = existing(fileName) ?: insert(fileName, format)
+        // Se c'era già un file con quel nome che Memy non vede, Android lo rinomina ("Nome (1).pdf"): si usa il nome vero.
+        val name = displayName(uri) ?: fileName
         context.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(bytes) }
         if (Build.VERSION.SDK_INT >= 29) {
             context.contentResolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
         }
-        sourceFile(fileName).writeText(content)
-        metaFile(fileName).writeText(title.orEmpty())
+        sourceFile(name).writeText(content)
+        metaFile(name).writeText(title.orEmpty())
         val pages = if (format == DocFormat.PDF) Regex("/Type\\s*/Page[^s]").findAll(String(bytes, Charsets.ISO_8859_1)).count() else null
-        return Saved(fileName, uri, "Download/$FOLDER/$fileName", pages)
+        return Saved(name, uri, "Download/$FOLDER/$name", pages)
     }
+
+    private fun displayName(uri: Uri): String? = runCatching {
+        context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+    }.getOrNull()
 
     private fun insert(fileName: String, format: DocFormat): Uri {
         val values = ContentValues().apply {

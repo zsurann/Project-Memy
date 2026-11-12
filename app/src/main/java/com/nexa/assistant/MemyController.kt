@@ -85,11 +85,11 @@ class MemyController(private val app: MemyApp) {
     val dictating = MutableStateFlow(false)
 
     /** Un motore di ascolto a parte (dettatura nelle altre app, ascolto mentre Memy lavora), o null se non ce n'è uno pronto. */
-    fun newDictationEngine(): CaptureSpeechToText? = when {
-        whisper.isReady() -> CaptureSpeechToText(app, "Whisper", asrModel, ready = { true }) { samples ->
+    fun newDictationEngine(ctx: android.content.Context = app): CaptureSpeechToText? = when {
+        whisper.isReady() -> CaptureSpeechToText(ctx, "Whisper", asrModel, ready = { true }) { samples ->
             groq.transcribe(samples, settings.groqKey().orEmpty(), GroqWhisper.DEFAULT_PROMPT)
         }
-        parakeet.isReady() -> CaptureSpeechToText(app, "Parakeet", asrModel, ready = { true }, finalTranscriber = null)
+        parakeet.isReady() -> CaptureSpeechToText(ctx, "Parakeet", asrModel, ready = { true }, finalTranscriber = null)
         else -> null
     }
     val googleDevice = SystemSpeechToText(app, googleOnly = true)
@@ -278,6 +278,7 @@ class MemyController(private val app: MemyApp) {
         if (speaking) voice.duck(true)
         fun done() {
             if (workStt === engine) workStt = null
+            engine.release()
             userSpeaking.value = false
             voice.duck(false)
             _state.update { it.copy(partial = "") }
@@ -290,7 +291,15 @@ class MemyController(private val app: MemyApp) {
                 val command = WakeWord.strip(text)
                 val echo = Echo.isEcho(text, lastSpoken)
                 if (echo) bargeOutcome(real = false)
-                if (echo || !SpokenWords.isMeaningful(command)) {
+                // Mentre lavora: solo "ferma" o frasi rivolte a lei ("Memy, …"); una conversazione nella stanza non conta.
+                val addressed = command.length < text.trim().length
+                val valid = when {
+                    isStopWord(command) -> true
+                    confirmation != null -> parseYesNo(command) != null
+                    !speaking -> addressed && command.isNotBlank()
+                    else -> SpokenWords.isMeaningful(command)
+                }
+                if (echo || !valid) {
                     // Niente di concreto: Memy continua come se nulla fosse.
                     afterIgnoredSpeech()
                     return
@@ -617,8 +626,8 @@ class MemyController(private val app: MemyApp) {
         var attempts = 0
         val answer = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) {
             while (!deferred.isCompleted && attempts < 3 && canListen()) {
-                // Se hai già risposto mentre Memy faceva la domanda, vale quella risposta.
-                workStt?.let { stopWorkListening() }
+                // Se stai già rispondendo mentre Memy finisce la domanda, si aspetta la tua frase invece di buttarla.
+                while (workStt != null && overHeard == null && !deferred.isCompleted) delay(100)
                 val early = overHeard.also { overHeard = null }
                 val text = if (early != null) early else {
                     val stt = resolveStt() ?: break
@@ -647,6 +656,12 @@ class MemyController(private val app: MemyApp) {
                     spoke(again)
                     voice.speakNow(again)
                 }
+            }
+            if (!deferred.isCompleted && attempts >= 3) {
+                val bye = "Va bene, lascio stare."
+                spoke(bye)
+                voice.speakNow(bye)
+                deferred.complete(false)
             }
             deferred.await()
         } ?: false
@@ -707,8 +722,11 @@ class MemyController(private val app: MemyApp) {
     }
 
     fun deleteAsrModel() {
-        asrModel.delete()
-        _state.update { it.copy(asrModelInstalled = false) }
+        // Fuori dal thread principale: se Parakeet sta trascrivendo, l'eliminazione aspetta senza bloccare lo schermo.
+        scope.launch(Dispatchers.IO) {
+            asrModel.delete()
+            _state.update { it.copy(asrModelInstalled = false) }
+        }
     }
 
     private fun notice(text: String) = addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = text, isNotice = true))
@@ -735,7 +753,8 @@ class MemyController(private val app: MemyApp) {
                 .replace(Regex("[^a-z ]"), " ").trim().replace(Regex("\\s+"), " ")
             return t in setOf(
                 "ferma", "fermati", "ferma tutto", "stop", "basta", "basta cosi", "annulla", "lascia stare", "lascia perdere",
-                "aspetta", "smetti", "smettila", "no ferma", "no fermati", "alt",
+                "aspetta", "smetti", "smettila", "no ferma", "no fermati", "alt", "zitta", "stai zitta", "silenzio",
+                "grazie basta", "basta grazie", "ok basta",
             )
         }
 

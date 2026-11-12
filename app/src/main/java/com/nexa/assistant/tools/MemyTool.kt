@@ -69,7 +69,12 @@ internal fun Context.hasPermission(p: String) =
  * Android gli permette di aprire app anche quando Memy non è in primo piano.
  */
 internal fun Context.launch(intent: Intent): Boolean = try {
-    (MemyAccessibilityService.instance ?: this).startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    val access = MemyAccessibilityService.instance
+    // Senza accessibilità e con Memy nascosta, Android blocca l'apertura in silenzio: meglio dirlo che fingere.
+    if (access == null && (applicationContext as? com.nexa.assistant.MemyApp)?.controller?.inForeground == false) {
+        throw IllegalStateException(NEED_FOREGROUND)
+    }
+    (access ?: this).startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     true
 } catch (e: ActivityNotFoundException) {
     false
@@ -88,5 +93,8 @@ internal const val NEED_ACCESSIBILITY =
     "Il controllo dello schermo non è collegato in questo momento. Se l'utente lo aveva già attivato, il telefono lo ha " +
         "sospeso (succede quando chiude Memy dalle app recenti): deve spegnerlo e riaccenderlo in Memy → Impostazioni → " +
         "Poteri → Controllo dello schermo, e bloccare Memy con il lucchetto nelle app recenti. Altrimenti deve attivarlo lì."
+internal const val NEED_FOREGROUND =
+    "Memy è in background e Android le impedisce di aprire app o schermate. Di' all'utente di attivare il controllo " +
+        "dello schermo (Memy → Impostazioni → Poteri), oppure di aprire Memy e ripetere la richiesta."
 internal const val NEED_NOTIFICATIONS =
     "L'accesso alle notifiche non è attivo. Di' all'utente di attivarlo in Memy: Impostazioni → Poteri → Notifiche."

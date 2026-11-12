@@ -50,7 +50,9 @@ class GroqWhisper(private val baseUrl: String = "https://api.groq.com/openai/v1"
                     resp.code,
                 )
             }
-            return clean(spokenText(JSONObject(text)))
+            val heard = clean(spokenText(JSONObject(text)))
+            // Sull'audio quasi muto Whisper a volte ripete l'esempio di stile: non è qualcosa che l'utente ha detto.
+            return if (echoesPrompt(heard, prompt)) "" else heard
         }
     }
 
@@ -83,6 +85,15 @@ class GroqWhisper(private val baseUrl: String = "https://api.groq.com/openai/v1"
                 }
                 .joinToString(" ") { it.optString("text").trim() }
                 .trim()
+        }
+
+        private fun norm(s: String) = java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}"), "").replace(Regex("[^a-z0-9]+"), " ").trim()
+
+        /** Il testo è un pezzo lungo (6+ parole) copiato dall'esempio di stile. */
+        internal fun echoesPrompt(text: String, prompt: String): Boolean {
+            val t = norm(text)
+            return t.split(' ').size >= 6 && norm(prompt).contains(t)
         }
 
         internal fun clean(raw: String): String {

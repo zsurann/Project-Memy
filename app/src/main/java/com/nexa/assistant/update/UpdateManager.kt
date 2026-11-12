@@ -9,7 +9,10 @@ import android.os.Build
 import android.provider.Settings
 import com.nexa.assistant.BuildConfig
 import com.nexa.assistant.data.MemySettings
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +28,9 @@ import java.util.concurrent.TimeUnit
  * scarica il nuovo APK e lo installa con il PackageInstaller di Android.
  */
 class UpdateManager(private val context: Context, private val settings: MemySettings) {
+
+    /** Gli aggiornamenti vivono quanto l'app, non quanto una schermata. */
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     data class Release(val versionCode: Long, val versionName: String, val notes: String, val apkUrl: String)
 
@@ -62,7 +68,7 @@ class UpdateManager(private val context: Context, private val settings: MemySett
     private fun isMetered(): Boolean =
         context.getSystemService(android.net.ConnectivityManager::class.java)?.isActiveNetworkMetered ?: true
 
-    private fun busy() = _state.value.let { it is State.Downloading || it is State.Installing }
+    private fun busy() = _state.value is State.Downloading
 
     suspend fun check(): Release? = withContext(Dispatchers.IO) {
         // Un download già in corso non va interrotto né fatto ripartire.
@@ -106,6 +112,9 @@ class UpdateManager(private val context: Context, private val settings: MemySett
         val apk = withContext(Dispatchers.IO) {
             try {
                 download(rel)
+            } catch (e: CancellationException) {
+                _state.value = State.Available(rel)
+                throw e
             } catch (e: Exception) {
                 _state.value = State.Failed("Download non riuscito: ${e.message}")
                 null

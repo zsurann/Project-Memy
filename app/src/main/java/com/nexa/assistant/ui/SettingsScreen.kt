@@ -326,7 +326,7 @@ fun SettingsScreen(app: MemyApp, onBack: () -> Unit) {
                     status?.let { Hint(it, warning = update is UpdateManager.State.Failed) }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         GradientButton("Controlla ora", {
-                            scope.launch { app.updates.check()?.let { app.updates.downloadAndInstall(it) } }
+                            app.updates.scope.launch { app.updates.check()?.let { app.updates.downloadAndInstall(it) } }
                         }, Modifier.weight(1f))
                         OutlineButton("Permesso", app.updates::openInstallPermissionSettings, Modifier.weight(1f))
                     }

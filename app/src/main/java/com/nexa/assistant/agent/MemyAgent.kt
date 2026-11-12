@@ -32,6 +32,7 @@ import com.nexa.assistant.tools.ToolInput
 import com.nexa.assistant.tools.ToolResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -106,7 +107,7 @@ class MemyAgent(
 
     private suspend fun runTurn(userText: String, options: Options, interrupting: Boolean): String {
         val now = System.currentTimeMillis()
-        if (now - lastActivity > CONVERSATION_TIMEOUT_MS || history.size > MAX_HISTORY) history.clear()
+        if (now - lastActivity > CONVERSATION_TIMEOUT_MS) history.clear() else trimHistory()
         lastActivity = now
 
         val api = clientFor(options.apiKey)
@@ -125,8 +126,24 @@ class MemyAgent(
 
                 when (response.stopReason().orElse(StopReason.END_TURN)) {
                     StopReason.TOOL_USE -> {
-                        history += runTools(response)
-                        safePoint = history.size
+                        val done = ArrayList<ContentBlockParam>()
+                        try {
+                            runTools(response, done)
+                        } finally {
+                            // Anche se l'utente interrompe, Claude deve sapere quali azioni sono già state fatte.
+                            history += toolResults(response, done, "Annullato dall'utente: non eseguito.")
+                            safePoint = history.size
+                        }
+                    }
+                    StopReason.MAX_TOKENS -> {
+                        // Risposta troppo lunga, tagliata mentre chiedeva uno strumento: la cronologia deve restare valida.
+                        if (response.content().any { it.toolUse().isPresent }) {
+                            history += toolResults(response, emptyList(), "Richiesta tagliata perché troppo lunga: rifalla più breve.")
+                            safePoint = history.size
+                        } else {
+                            lastActivity = System.currentTimeMillis()
+                            return spoken.toString().trim().ifEmpty { "Ecco fatto." }
+                        }
                     }
                     StopReason.PAUSE_TURN -> Unit // ricerca web lunga: il server chiede di proseguire
                     StopReason.REFUSAL -> {
@@ -149,14 +166,14 @@ class MemyAgent(
             }
             return "Ho fatto molti passaggi senza riuscire a finire. Dimmi come preferisci che continui.".also { hooks.onSentence(it) }
         } catch (e: AnthropicServiceException) {
-            rollback(checkpoint)
+            rollbackAfterError(checkpoint, safePoint)
             throw AgentException(describe(e))
         } catch (e: AnthropicIoException) {
             if (job?.isActive == false) {
                 rollback(safePoint)
                 throw CancellationException("annullato")
             }
-            rollback(checkpoint)
+            rollbackAfterError(checkpoint, safePoint)
             throw AgentException("Non riesco a collegarmi a internet. Controlla la connessione.")
         } catch (e: CancellationException) {
             rollback(safePoint)
@@ -167,7 +184,7 @@ class MemyAgent(
                 rollback(safePoint)
                 throw CancellationException("annullato")
             }
-            rollback(checkpoint)
+            rollbackAfterError(checkpoint, safePoint)
             throw AgentException("Si è verificato un errore imprevisto: ${e.message}")
         }
     }
@@ -208,7 +225,8 @@ class MemyAgent(
         }
         api.messages().createStreaming(params).use { stream ->
             // Se l'utente interrompe, la connessione si chiude subito invece di aspettare il prossimo dato.
-            val onCancel = job?.invokeOnCompletion { runCatching { stream.close() } }
+            @OptIn(InternalCoroutinesApi::class)
+            val onCancel = job?.invokeOnCompletion(onCancelling = true, invokeImmediately = true) { runCatching { stream.close() } }
             try {
                 val iterator = stream.stream().iterator()
                 while (iterator.hasNext()) {
@@ -252,8 +270,34 @@ class MemyAgent(
         while (history.size > checkpoint) history.removeAt(history.lastIndex)
     }
 
-    private suspend fun runTools(response: Message): MessageParam {
-        val results = response.content().mapNotNull { it.toolUse().orElse(null) }.map { block ->
+    /**
+     * Dopo un errore: se erano già state fatte delle azioni, la cronologia le conserva (così un "riprova" non le
+     * ripete, per esempio un SMS); altrimenti si torna a prima della richiesta.
+     */
+    private fun rollbackAfterError(checkpoint: Int, safePoint: Int) {
+        rollback(if (safePoint > checkpoint + 1) safePoint else checkpoint)
+    }
+
+    /** Toglie i turni più vecchi (mai a metà di un turno) invece di dimenticare tutto di colpo. */
+    private fun trimHistory() {
+        if (history.size <= MAX_HISTORY) return
+        while (history.size > MAX_HISTORY / 2) history.removeAt(0)
+        // La cronologia deve iniziare con una domanda dell'utente, non con risultati di strumenti o una risposta.
+        while (history.isNotEmpty() && !(history[0].role() == MessageParam.Role.USER && history[0].content().isString())) history.removeAt(0)
+    }
+
+    /** I risultati per tutti gli strumenti chiesti: quelli eseguiti e, per gli altri, [missing]. */
+    private fun toolResults(response: Message, done: List<ContentBlockParam>, missing: String): MessageParam {
+        val doneIds = done.mapNotNull { it.toolResult().orElse(null)?.toolUseId() }.toSet()
+        val rest = response.content().mapNotNull { it.toolUse().orElse(null) }.filter { it.id() !in doneIds }.map {
+            ContentBlockParam.ofToolResult(ToolResultBlockParam.builder().toolUseId(it.id()).isError(true).content(missing).build())
+        }
+        // Tutti i risultati vanno in un unico messaggio utente.
+        return MessageParam.ofUserOfContentBlockParams(done + rest)
+    }
+
+    private suspend fun runTools(response: Message, out: MutableList<ContentBlockParam>) {
+        response.content().mapNotNull { it.toolUse().orElse(null) }.forEach { block ->
             val result = executeTool(block)
             val builder = ToolResultBlockParam.builder().toolUseId(block.id()).isError(result.isError)
             val image = result.imageJpeg
@@ -269,10 +313,8 @@ class MemyAgent(
                     ),
                 )
             )
-            ContentBlockParam.ofToolResult(builder.build())
+            out += ContentBlockParam.ofToolResult(builder.build())
         }
-        // Tutti i risultati vanno in un unico messaggio utente.
-        return MessageParam.ofUserOfContentBlockParams(results)
     }
 
     @Suppress("UNCHECKED_CAST")

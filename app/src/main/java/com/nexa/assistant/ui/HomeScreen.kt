@@ -567,7 +567,7 @@ private fun UpdateBanner(update: UpdateManager.State, app: MemyApp) {
                 }
                 when (update) {
                     is UpdateManager.State.Available ->
-                        SmallGradientButton("Aggiorna") { scope.launch { app.updates.downloadAndInstall(update.release) } }
+                        SmallGradientButton("Aggiorna") { app.updates.scope.launch { app.updates.downloadAndInstall(update.release) } }
                     is UpdateManager.State.NeedsPermission ->
                         SmallGradientButton("Consenti") { app.updates.openInstallPermissionSettings() }
                     else -> Unit

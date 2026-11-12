@@ -72,7 +72,8 @@ class SoundModeTool(private val ctx: Context) : MemyTool {
             am.ringerMode = when (mode) {
                 "silent" -> AudioManager.RINGER_MODE_SILENT
                 "vibrate" -> AudioManager.RINGER_MODE_VIBRATE
-                else -> AudioManager.RINGER_MODE_NORMAL
+                "normal" -> AudioManager.RINGER_MODE_NORMAL
+                else -> return ToolResult.error("Modalità sconosciuta: usa normal, vibrate o silent.")
             }
             ToolResult.ok("Modalità suoneria: $mode.")
         } catch (e: SecurityException) {
