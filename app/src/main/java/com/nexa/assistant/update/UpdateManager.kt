@@ -68,7 +68,12 @@ class UpdateManager(private val context: Context, private val settings: MemySett
     private fun isMetered(): Boolean =
         context.getSystemService(android.net.ConnectivityManager::class.java)?.isActiveNetworkMetered ?: true
 
-    private fun busy() = _state.value is State.Downloading
+    private var installingSince = 0L
+
+    /** Download in corso, o conferma di installazione aperta da poco: non si ricomincia da capo. */
+    private fun busy() = _state.value.let {
+        it is State.Downloading || (it is State.Installing && System.currentTimeMillis() - installingSince < 5 * 60_000L)
+    }
 
     suspend fun check(): Release? = withContext(Dispatchers.IO) {
         // Un download già in corso non va interrotto né fatto ripartire.
@@ -123,6 +128,7 @@ class UpdateManager(private val context: Context, private val settings: MemySett
         withContext(Dispatchers.IO) {
             try {
                 install(apk)
+                installingSince = System.currentTimeMillis()
                 _state.value = State.Installing
             } catch (e: Exception) {
                 _state.value = State.Failed("Installazione non riuscita: ${e.message}")

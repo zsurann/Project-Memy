@@ -87,6 +87,8 @@ class GroqWhisperTest {
         assertTrue(GroqWhisper.echoesPrompt("Apri WhatsApp e scrivi a Marco che arrivo tra dieci minuti.", prompt))
         assertTrue(!GroqWhisper.echoesPrompt("Apri WhatsApp", prompt))
         assertTrue(!GroqWhisper.echoesPrompt("Scrivi a Giulia che arrivo tra dieci minuti", prompt))
+        // Una richiesta vera che coincide con un pezzo breve dell'esempio non va scartata.
+        assertTrue(!GroqWhisper.echoesPrompt("Leggimi le notifiche di Telegram e Instagram", prompt))
     }
 
     @Test

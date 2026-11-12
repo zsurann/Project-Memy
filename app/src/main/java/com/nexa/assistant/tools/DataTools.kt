@@ -317,10 +317,17 @@ class RememberTool(private val memory: MemoryStore) : MemyTool {
     override val description =
         "Salva nella memoria a lungo termine un'informazione sull'utente (preferenze, persone, abitudini, indirizzi) da ricordare nelle conversazioni future. " +
             "Usalo quando l'utente dice di ricordare qualcosa o condivide un fatto stabile e utile. Non salvare password o dati di pagamento."
-    override val properties = mapOf("fact" to prop("string", "Il fatto da ricordare, in una frase breve e autonoma"))
+    override val properties = mapOf(
+        "fact" to prop("string", "Il fatto da ricordare, in una frase breve e autonoma"),
+        "replaces" to prop("string", "Se il fatto aggiorna un ricordo vecchio (es. nuovo indirizzo), una parola o frase contenuta nel ricordo da sostituire"),
+    )
     override val required = listOf("fact")
-    override suspend fun execute(input: ToolInput): ToolResult =
-        if (memory.add(input.requireString("fact"))) ToolResult.ok("Salvato in memoria.") else ToolResult.ok("Lo ricordavo già.")
+    override suspend fun execute(input: ToolInput): ToolResult {
+        val fact = input.requireString("fact")
+        val old = input.string("replaces")
+        if (old != null) return if (memory.replace(old, fact)) ToolResult.ok("Ricordo aggiornato.") else ToolResult.error("Fatto vuoto.")
+        return if (memory.add(fact)) ToolResult.ok("Salvato in memoria.") else ToolResult.ok("Lo ricordavo già.")
+    }
 }
 
 class ForgetTool(private val memory: MemoryStore) : MemyTool {

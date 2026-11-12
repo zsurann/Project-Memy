@@ -207,11 +207,13 @@ class VoicePlayer(
     fun enqueue(text: String) {
         val clean = cleanForSpeech(text)
         if (clean.isBlank()) return
-        scope.launch {
+        val add = {
             if (_preview.value != null) stopPreview()
             pending.update { it + 1 }
             incoming.trySend(generation to clean)
         }
+        // Dal thread principale si conta subito (così speakNow aspetta davvero la voce); dagli altri thread ci si passa.
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) add() else scope.launch { add() }
     }
 
     /** Aspetta che tutte le frasi in coda siano state lette. */

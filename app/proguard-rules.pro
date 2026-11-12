@@ -25,3 +25,7 @@
 # sherpa-onnx: il codice nativo legge i campi delle classi di configurazione per nome.
 -keep class com.k2fsa.sherpa.onnx.** { *; }
 -keepclassmembers class com.k2fsa.sherpa.onnx.** { *; }
+
+# commons-compress: formati zip rari (zstd, xz) non inclusi; Memy salta i file che li usano.
+-dontwarn com.github.luben.zstd.**
+-dontwarn org.tukaani.xz.**

@@ -56,6 +56,8 @@ serve il tuo sì.
   li modifica quando cambi idea, te li apre o li manda a chi vuoi. Se glielo permetti, legge anche i tuoi PDF e Word.
 - **Condividi con Memy** — da qualsiasi app manda a Memy una foto, un PDF, un documento o un link: lei ti chiede cosa
   farne e ti risponde («riassumilo», «cosa c'è scritto?», «traducimelo»).
+- **Archivi zip** — condividi uno zip e Memy ti dice cosa contiene, legge i file al suo interno senza estrarli e, se
+  vuoi, li estrae in Download/Memy. Anche gli zip dentro altri zip. Le app trovate dentro le nomina, non le installa.
 - **Piccole cose** — torcia, volume, musica, silenzioso, Non disturbare, fotocamera.
 
 ## Una conversazione vera

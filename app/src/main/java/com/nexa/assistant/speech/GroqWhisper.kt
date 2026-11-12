@@ -102,10 +102,10 @@ class GroqWhisper(private val baseUrl: String = "https://api.groq.com/openai/v1"
         private fun norm(s: String) = java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
             .replace(Regex("\\p{M}"), "").replace(Regex("[^a-z0-9]+"), " ").trim()
 
-        /** Il testo è un pezzo lungo (6+ parole) copiato dall'esempio di stile. */
+        /** Il testo è un pezzo lungo (9+ parole) copiato dall'esempio di stile: frasi così lunghe e identiche non si dicono per caso. */
         internal fun echoesPrompt(text: String, prompt: String): Boolean {
             val t = norm(text)
-            return t.split(' ').size >= 6 && norm(prompt).contains(t)
+            return t.split(' ').size >= 9 && norm(prompt).contains(t)
         }
 
         internal fun clean(raw: String): String {

@@ -79,6 +79,26 @@ class MemyAccessibilityService : AccessibilityService() {
 
     fun hasReadableWindow(): Boolean = activeRoot() != null
 
+    /** Impronta dell'ultima lettura: serve a dire se un'azione ha davvero cambiato la schermata. */
+    @Volatile var lastScreenHash = 0
+        private set
+
+    private fun appLabel(pkg: String): String = runCatching {
+        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+    }.getOrDefault(pkg)
+
+    /** Titolo della finestra attiva (es. il nome della chat), se Android lo fornisce. */
+    private fun windowTitle(): String? = runCatching {
+        windows.orEmpty().firstOrNull { it.isActive || it.isFocused }?.title?.toString()?.takeIf { it.isNotBlank() }
+    }.getOrNull()
+
+    /** In breve cosa c'è sullo schermo, da aggiungere alle richieste: app e schermata. */
+    fun screenSummary(): String? {
+        val pkg = activeRoot()?.packageName?.toString() ?: currentPackage.takeIf { it.isNotBlank() } ?: return null
+        if (pkg == packageName) return null
+        return appLabel(pkg) + (windowTitle()?.let { " — $it" } ?: "")
+    }
+
     /** Descrive lo schermo attuale come elenco numerato di elementi. */
     fun readScreen(): String {
         val root = activeRoot()
@@ -86,11 +106,15 @@ class MemyAccessibilityService : AccessibilityService() {
         val list = mutableListOf<Element>()
         collect(root, list, 0)
         elements = list
+        lastScreenHash = list.joinToString("|") { it.label }.hashCode()
         val pkg = root.packageName?.toString().orEmpty()
         if (pkg.isNotBlank()) currentPackage = pkg
-        if (list.isEmpty()) return "App in primo piano: $pkg. Nessun elemento leggibile (l'app potrebbe proteggere il contenuto: prova look_at_screen)."
+        val header = "App in primo piano: ${appLabel(pkg)} ($pkg)" + (windowTitle()?.let { ", schermata: $it" } ?: "")
+        if (list.isEmpty()) return "$header. Nessun elemento leggibile (l'app potrebbe proteggere il contenuto: prova look_at_screen)."
+        val focused = list.firstOrNull { it.node.isFocused && it.node.isEditable }
         return buildString {
-            append("App in primo piano: ").append(pkg).append('\n')
+            append(header).append('\n')
+            focused?.let { append("Cursore nel campo [").append(it.index).append("]\n") }
             list.forEach { append('[').append(it.index).append("] ").append(it.label).append('\n') }
             if (list.size >= MAX_ELEMENTS) append("… (elenco troncato: scorri per vedere altro)\n")
         }
@@ -178,8 +202,11 @@ class MemyAccessibilityService : AccessibilityService() {
     }
 
     private suspend fun gesture(stroke: GestureDescription.StrokeDescription): Boolean {
+        val hidden = statusView != null
         statusTouchable(false)
         try {
+            // Il cambio diventa effettivo al fotogramma successivo: si aspetta prima di toccare.
+            if (hidden) kotlinx.coroutines.delay(50)
             return dispatch(stroke)
         } finally {
             statusTouchable(true)

@@ -100,8 +100,8 @@ class MemyAgentTest {
 
         val reply = agent(torch, hooks).run("accendi la torcia", opts())
 
-        // La prima frase si legge subito (velocità); quando parte lo strumento è la voce a fermarsi.
-        assertEquals(listOf("Certo, accendo la torcia.", "Ecco fatto, la torcia è accesa!", "Serve altro?"), hooks.sentences)
+        // "Certo, accendo la torcia." è seguita da uno strumento, non da altro testo: non viene letta.
+        assertEquals(listOf("Ecco fatto, la torcia è accesa!", "Serve altro?"), hooks.sentences)
         assertEquals("Ecco fatto, la torcia è accesa! Serve altro?", reply)
         assertEquals(1, torch.calls.size)
         assertEquals(true, torch.calls[0].bool("on"))
@@ -239,7 +239,8 @@ class MemyAgentTest {
         assertTrue("Haiku può salire", toolNames(first.getJSONArray("tools")).contains("think_harder"))
         val second = JSONObject(server.takeRequest().body.readUtf8())
         assertEquals("claude-sonnet-5-5", second.getString("model"))
-        assertTrue("Sonnet non sale oltre", !toolNames(second.getJSONArray("tools")).contains("think_harder"))
+        // Stesso elenco di strumenti in tutte le richieste: la cache resta valida.
+        assertEquals(toolNames(first.getJSONArray("tools")), toolNames(second.getJSONArray("tools")))
     }
 
     @Test

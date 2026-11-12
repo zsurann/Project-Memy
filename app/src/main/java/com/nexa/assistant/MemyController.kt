@@ -141,7 +141,7 @@ class MemyController(private val app: MemyApp) {
 
     private val agent = MemyAgent(
         basicTools(app) + screenTools() + notificationTools() + dataTools(app, app.memory, app.reminders) + systemTools(app) +
-            com.nexa.assistant.tools.documentTools(app),
+            com.nexa.assistant.tools.documentTools(app) + com.nexa.assistant.tools.zipTools(app),
         object : MemyAgent.Hooks {
             override suspend fun confirm(prompt: String): Boolean =
                 withContext(Dispatchers.Main) { askConfirmation(prompt) }
@@ -252,8 +252,8 @@ class MemyController(private val app: MemyApp) {
                 val busy = activeStt != null || workStt != null || p == Phase.LISTENING
                 when {
                     busy -> capture.release()
-                    agentBusy && p != Phase.CONFIRMING -> listenAside(capture, speaking = false)
                     voice.speaking.value -> listenAside(capture, speaking = true)
+                    agentBusy && p != Phase.CONFIRMING -> listenAside(capture, speaking = false)
                     else -> capture.release()
                 }
             }
@@ -329,7 +329,7 @@ class MemyController(private val app: MemyApp) {
     }
 
     private fun stopWorkListening() {
-        workStt?.stop()
+        workStt?.release()
         workStt = null
         userSpeaking.value = false
         voice.duck(false)
@@ -539,7 +539,9 @@ class MemyController(private val app: MemyApp) {
         finishStreamingLine()
         addLine(ChatLine(ids.incrementAndGet(), fromUser = true, text = clean))
         addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = "", streaming = true))
-        val attachment = pendingAttachment.also { pendingAttachment = null }
+        // L'allegato vale solo per la risposta alla domanda «cosa ne faccio?», non per una richiesta di ore dopo.
+        val attachment = pendingAttachment?.takeIf { System.currentTimeMillis() - pendingAttachmentAt < 5 * 60_000L }
+        pendingAttachment = null
         agentBusy = true
         updateBarge()
         val runId = ++runSeq
@@ -547,7 +549,10 @@ class MemyController(private val app: MemyApp) {
             _state.update { it.copy(phase = Phase.THINKING, partial = "") }
             val s = settings.state.value
             val reply = try {
-                agent.run(clean, MemyAgent.Options(key, s.model, s.userName, s.webSearch, app.memory.items.value), interrupting, attachment)
+                // Contesto automatico: l'app che l'utente ha davanti (se Memy non è in primo piano) e la città.
+                val screen = if (inForeground) null else MemyAccessibilityService.instance?.screenSummary()
+                val options = MemyAgent.Options(key, s.model, s.userName, s.webSearch, app.memory.items.value, screen, city())
+                agent.run(clean, options, interrupting, attachment)
             } catch (e: MemyAgent.AgentException) {
                 (e.message ?: "Si è verificato un errore.").also { voice.enqueue(it) }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -704,8 +709,31 @@ class MemyController(private val app: MemyApp) {
         updateOverlay()
     }
 
+    @Volatile private var cachedCity: String? = null
+    private var cityCheckedAt = 0L
+
+    /** Città approssimativa per la ricerca web, dall'ultima posizione nota (al massimo ogni 30 minuti, senza GPS). */
+    private fun city(): String? {
+        val now = System.currentTimeMillis()
+        if (now - cityCheckedAt > 30 * 60_000L) {
+            cityCheckedAt = now
+            scope.launch(Dispatchers.IO) {
+                cachedCity = runCatching {
+                    if (ContextCompat.checkSelfPermission(app, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) return@runCatching null
+                    val lm = app.getSystemService(android.location.LocationManager::class.java)
+                    val loc = lm.getProviders(true).mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }.maxByOrNull { it.time }
+                        ?: return@runCatching null
+                    @Suppress("DEPRECATION")
+                    android.location.Geocoder(app, java.util.Locale.ITALIAN).getFromLocation(loc.latitude, loc.longitude, 1)?.firstOrNull()?.locality
+                }.getOrNull() ?: cachedCity
+            }
+        }
+        return cachedCity
+    }
+
     /** Foto, PDF o link condiviso da un'altra app, in attesa della richiesta su cosa farne. */
     private var pendingAttachment: MemyAgent.Attachment? = null
+    private var pendingAttachmentAt = 0L
 
     /**
      * «Condividi con Memy»: tiene da parte ciò che è arrivato e chiede a voce cosa farne.
@@ -713,11 +741,12 @@ class MemyController(private val app: MemyApp) {
      */
     fun onShared(attachment: MemyAgent.Attachment?, what: String, name: String) {
         if (attachment == null) {
-            notice("Non so leggere questo tipo di file ($name).")
+            notice(name.replaceFirstChar { it.uppercase() } + ".")
             return
         }
         stopAll()
         pendingAttachment = attachment
+        pendingAttachmentAt = System.currentTimeMillis()
         addLine(ChatLine(ids.incrementAndGet(), fromUser = true, text = "📎 $name"))
         val question = "Cosa vuoi che faccia con $what?"
         addLine(ChatLine(ids.incrementAndGet(), fromUser = false, text = question))
@@ -799,6 +828,8 @@ class MemyController(private val app: MemyApp) {
                 "sicuro", "giusto", "perfetto", "fallo", "certamente", "assolutamente", "yes",
             )
             return when {
+                // «Sì, non c'è problema»: c'è un sì e un "non" che non è un rifiuto. Meglio chiedere di nuovo che annullare.
+                words.firstOrNull() == "si" && "non" in words && words.none { it in no - "non" } -> null
                 words.any { it in no } -> false
                 words.any { it in yes } -> true
                 else -> null

@@ -109,8 +109,9 @@ class MainActivity : ComponentActivity() {
     private fun handleLaunch(intent: Intent?) {
         if (intent?.action == Intent.ACTION_SEND) {
             lifecycleScope.launch {
-                val shared = runCatching { readShared(intent) }.getOrNull()
-                app.controller.onShared(shared?.first, shared?.second ?: "", shared?.third ?: (intent.type ?: "file"))
+                val shared = runCatching { readShared(intent) }
+                    .getOrElse { Triple(null, "", "non riesco ad aprire il file condiviso (${it.message ?: it.javaClass.simpleName})") }
+                app.controller.onShared(shared.first, shared.second, shared.third)
             }
             return
         }
@@ -132,49 +133,100 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Legge ciò che un'altra app ha condiviso con Memy: allegato, come chiamarlo a voce, nome. */
+    /**
+     * Legge ciò che un'altra app ha condiviso con Memy: allegato, come chiamarlo a voce, nome.
+     * Allegato null = non leggibile; il nome contiene allora anche il motivo.
+     */
     private suspend fun readShared(intent: Intent): Triple<MemyAgent.Attachment?, String, String> = withContext(Dispatchers.IO) {
         @Suppress("DEPRECATION")
         val uri = if (android.os.Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java)
         else intent.getParcelableExtra(Intent.EXTRA_STREAM) as? android.net.Uri
-        val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+        // Alcune app mandano testo formattato: getStringExtra restituirebbe null.
+        val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
         if (uri == null) {
             val link = text?.trim()?.startsWith("http") == true
             return@withContext Triple(text?.let { MemyAgent.Attachment.Text(if (link) "link" else "testo", it) }, if (link) "questo link" else "questo testo", if (link) "Link" else "Testo")
         }
-        val name = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "file"
+        val name = runCatching {
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull() ?: "file"
         val type = contentResolver.getType(uri) ?: intent.type ?: ""
-        // shortcut: file oltre 20 MB rifiutati (limite dei PDF per Claude), niente lettura a pezzi.
-        val bytes = contentResolver.openInputStream(uri)!!.use { input ->
-            val out = java.io.ByteArrayOutputStream()
-            val buf = ByteArray(64 * 1024)
-            while (out.size() <= MAX_SHARE_BYTES) {
-                val n = input.read(buf)
-                if (n < 0) break
-                out.write(buf, 0, n)
-            }
-            out.toByteArray()
+        val zip = type in ZIP_TYPES || name.endsWith(".zip", true)
+        val image = type.startsWith("image/")
+        val limit = when { zip -> MAX_ZIP_BYTES; image -> MAX_IMAGE_BYTES; else -> MAX_SHARE_BYTES }
+        // Si copia a pezzi in un file: gli zip possono pesare fino a 2 GB.
+        val dir = if (zip) com.nexa.assistant.tools.Zips.shared(this@MainActivity) else cacheDir
+        val file = java.io.File(dir, if (zip) name.replace('/', '_') else "condiviso.tmp")
+        val size = try {
+            contentResolver.openInputStream(uri)!!.use { input -> file.outputStream().use { out -> copyCapped(input, out, limit) } }
+        } catch (e: Exception) {
+            return@withContext Triple(null, "", "$name: non riesco ad aprire il file (${e.message ?: "accesso negato"})")
         }
-        if (bytes.size > MAX_SHARE_BYTES) return@withContext Triple(null, "", "$name (troppo grande, massimo 20 MB)")
+        if (size > limit) {
+            file.delete()
+            return@withContext Triple(null, "", "$name: troppo grande (massimo ${limit shr 20} MB)")
+        }
         when {
-            type.startsWith("image/") -> {
-                val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    ?: return@withContext Triple(null, "", name)
-                val scale = minOf(1f, 1568f / maxOf(bmp.width, bmp.height))
-                val scaled = android.graphics.Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt().coerceAtLeast(1), (bmp.height * scale).toInt().coerceAtLeast(1), true)
+            zip -> {
+                val summary = runCatching { com.nexa.assistant.tools.Zips.describe(null, file, 60) }
+                    .getOrElse { return@withContext Triple(null, "", "$name: zip non valido (${it.message})") }
+                Triple(
+                    MemyAgent.Attachment.Text(name, summary + "\nPer leggerlo o estrarlo usa gli strumenti zip con file=\"${file.name}\"."),
+                    "questo archivio zip", name,
+                )
+            }
+            image -> {
+                // Decodifica già ridotta (le foto da 200 MP non entrano in memoria) e rotazione corretta.
+                val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                android.graphics.BitmapFactory.decodeFile(file.path, bounds)
+                var sample = 1
+                while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 1568) sample *= 2
+                val bmp = android.graphics.BitmapFactory.decodeFile(file.path, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+                    ?: return@withContext Triple(null, "", "$name: immagine non leggibile")
+                val degrees = runCatching {
+                    when (android.media.ExifInterface(file.path).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)) {
+                        android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90
+                        android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180
+                        android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270
+                        else -> 0
+                    }
+                }.getOrDefault(0)
+                val rotated = if (degrees == 0) bmp else android.graphics.Bitmap.createBitmap(
+                    bmp, 0, 0, bmp.width, bmp.height, android.graphics.Matrix().apply { postRotate(degrees.toFloat()) }, true,
+                )
+                val scale = minOf(1f, 1568f / maxOf(rotated.width, rotated.height))
+                val scaled = android.graphics.Bitmap.createScaledBitmap(rotated, (rotated.width * scale).toInt().coerceAtLeast(1), (rotated.height * scale).toInt().coerceAtLeast(1), true)
                 val jpeg = java.io.ByteArrayOutputStream().also { scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
                 Triple(MemyAgent.Attachment.Image(jpeg), "questa foto", name)
             }
-            type == "application/pdf" || name.endsWith(".pdf", true) -> Triple(MemyAgent.Attachment.Pdf(bytes), "questo PDF", name)
-            name.endsWith(".docx", true) -> Triple(MemyAgent.Attachment.Text(name, com.nexa.assistant.documents.DocxRenderer.extractText(bytes)), "questo documento", name)
-            type.startsWith("text/") -> Triple(MemyAgent.Attachment.Text(name, String(bytes)), "questo file", name)
-            else -> Triple(null, "", name)
+            type == "application/pdf" || name.endsWith(".pdf", true) -> Triple(MemyAgent.Attachment.Pdf(file.readBytes()), "questo PDF", name)
+            name.endsWith(".docx", true) || type == DOCX_TYPE ->
+                Triple(MemyAgent.Attachment.Text(name, com.nexa.assistant.documents.DocxRenderer.extractText(file.readBytes())), "questo documento", name)
+            type.startsWith("text/") -> Triple(MemyAgent.Attachment.Text(name, file.readText()), "questo file", name)
+            else -> Triple(null, "", "$name: non so leggere questo tipo di file")
+        }.also { if (!zip) file.delete() }
+    }
+
+    /** Copia fino a [limit] byte (+1 per accorgersi che è troppo grande). */
+    private fun copyCapped(input: java.io.InputStream, out: java.io.OutputStream, limit: Long): Long {
+        val buf = ByteArray(256 * 1024)
+        var total = 0L
+        while (total <= limit) {
+            val n = input.read(buf)
+            if (n < 0) break
+            out.write(buf, 0, n)
+            total += n
         }
+        return total
     }
 
     companion object {
-        private const val MAX_SHARE_BYTES = 20 * 1024 * 1024
+        private const val MAX_SHARE_BYTES = 20L shl 20
+        private const val MAX_IMAGE_BYTES = 200L shl 20
+        private const val MAX_ZIP_BYTES = 2L shl 30
+        private const val DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        private val ZIP_TYPES = setOf("application/zip", "application/x-zip-compressed", "application/x-zip")
         const val EXTRA_LISTEN = "com.nexa.assistant.LISTEN"
     }
 }

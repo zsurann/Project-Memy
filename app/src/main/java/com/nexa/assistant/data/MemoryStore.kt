@@ -30,6 +30,16 @@ class MemoryStore(context: Context) {
         return true
     }
 
+    /** Sostituisce i ricordi superati (che contengono [old]) con il fatto nuovo. */
+    fun replace(old: String, fact: String): Boolean {
+        val q = old.trim()
+        val kept = if (q.isEmpty()) _items.value else _items.value.filterNot { it.contains(q, ignoreCase = true) }
+        val clean = fact.trim()
+        if (clean.isEmpty()) return false
+        save((kept.filterNot { it.equals(clean, ignoreCase = true) } + clean).takeLast(MAX_ITEMS))
+        return true
+    }
+
     /** Rimuove i ricordi che contengono il testo dato. Restituisce quanti ne ha tolti. */
     fun removeMatching(query: String): Int {
         val q = query.trim()

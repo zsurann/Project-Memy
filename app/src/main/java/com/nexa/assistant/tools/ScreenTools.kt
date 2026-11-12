@@ -26,9 +26,17 @@ private suspend fun readWithRetry(svc: MemyAccessibilityService): String {
 
 /** Dopo un'azione aspetta che l'interfaccia si aggiorni e restituisce il nuovo schermo. */
 private suspend fun settledScreen(svc: MemyAccessibilityService, waitMs: Long = 650): String {
+    val before = svc.lastScreenHash
     delay(waitMs)
-    return "Schermo dopo l'azione:\n" + svc.readScreen()
+    val screen = svc.readScreen()
+    // Dire esplicitamente se qualcosa è cambiato aiuta a capire se l'azione ha funzionato.
+    val changed = if (svc.lastScreenHash != before) "sì" else "no (l'azione potrebbe non aver avuto effetto)"
+    return "Schermata cambiata: $changed\nSchermo dopo l'azione:\n$screen"
 }
+
+/** Errore con lo schermo attuale già allegato, così si può correggere senza un'altra lettura. */
+private fun errorWithScreen(svc: MemyAccessibilityService, message: String) =
+    ToolResult.error("$message\nSchermo attuale:\n" + svc.readScreen())
 
 /** Parole che indicano un'azione con effetti reali: per queste Memy chiede sempre conferma. */
 private val SENSITIVE = listOf(
@@ -108,9 +116,9 @@ class TapElementTool : MemyTool {
         val index = input.int("index") ?: return ToolResult.error("Manca il numero dell'elemento")
         return withContext(Dispatchers.Main) {
             val el = svc.element(index)
-                ?: return@withContext ToolResult.error("Elemento $index non trovato: rileggi lo schermo con read_screen.")
+                ?: return@withContext errorWithScreen(svc, "Elemento $index non trovato: i numeri sono cambiati.")
             if (!svc.tap(el, input.bool("long_press") == true)) {
-                return@withContext ToolResult.error("Il tocco su ${el.label} non è riuscito. Rileggi lo schermo e riprova.")
+                return@withContext errorWithScreen(svc, "Il tocco su ${el.label} non è riuscito.")
             }
             ToolResult.ok("Toccato: ${el.label}.\n" + settledScreen(svc))
         }
@@ -176,13 +184,13 @@ class TypeTextTool : MemyTool {
             val index = input.int("index")
             val ok = if (index != null) {
                 val el = svc.element(index)
-                    ?: return@withContext ToolResult.error("Campo $index non trovato: rileggi lo schermo con read_screen.")
+                    ?: return@withContext errorWithScreen(svc, "Campo $index non trovato: i numeri sono cambiati.")
                 svc.setText(el, text) || run {
                     // Alcune app accettano il testo solo dopo un tocco sul campo.
                     svc.tap(el); delay(400); svc.setTextInFocused(text)
                 }
             } else svc.setTextInFocused(text)
-            if (!ok) return@withContext ToolResult.error("Non riesco a scrivere qui: tocca prima il campo di testo e riprova.")
+            if (!ok) return@withContext errorWithScreen(svc, "Non riesco a scrivere qui: tocca prima il campo di testo e riprova.")
             if (input.bool("press_enter") == true) {
                 delay(250)
                 if (!svc.pressEnter()) return@withContext ToolResult.ok("Testo scritto, ma Invio non è disponibile: tocca il pulsante di ricerca/invio.\n" + settledScreen(svc))

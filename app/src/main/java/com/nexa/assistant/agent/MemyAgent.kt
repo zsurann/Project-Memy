@@ -83,6 +83,10 @@ class MemyAgent(
         val userName: String,
         val webSearch: Boolean,
         val memories: List<String> = emptyList(),
+        /** Cosa c'è sullo schermo adesso (app e schermata), aggiunto alla richiesta. */
+        val screenContext: String? = null,
+        /** Città approssimativa, per la ricerca web. */
+        val city: String? = null,
     )
 
     class AgentException(message: String) : Exception(message)
@@ -100,6 +104,7 @@ class MemyAgent(
 
     fun resetConversation() {
         history.clear()
+        conversationMemories = null
     }
 
     /**
@@ -114,6 +119,10 @@ class MemyAgent(
 
     /** Modello usato in questo momento: in automatico parte da Haiku e può salire a Sonnet durante la richiesta. */
     @Volatile private var turnModel = ClaudeModel.HAIKU
+    private var conversationMemories: List<String>? = null
+
+    private fun hasBigAttachment(m: MessageParam) =
+        m.content().isContentBlockParams() && m.content().asContentBlockParams().any { it.isImage() || it.isDocument() }
     private var autoModel = false
     private var lastWarm = 0L
 
@@ -141,15 +150,20 @@ class MemyAgent(
 
     private suspend fun runTurn(userText: String, options: Options, interrupting: Boolean, attachment: Attachment?): String {
         autoModel = options.model == ClaudeModel.AUTO
+        // Un solo allegato grande per conversazione: altrimenti la richiesta supera i limiti dell'API.
+        if (attachment != null && history.any { !it.content().isString() && it.role() == MessageParam.Role.USER && hasBigAttachment(it) }) history.clear()
         turnModel = if (autoModel) ClaudeModel.HAIKU else options.model
         val now = System.currentTimeMillis()
         if (now - lastActivity > CONVERSATION_TIMEOUT_MS) history.clear() else trimHistory()
         lastActivity = now
 
+        // I ricordi entrano nel prompt solo all'inizio della conversazione: cambiarlo a metà invaliderebbe il ragionamento.
+        if (history.isEmpty()) conversationMemories = options.memories
         val api = clientFor(options.apiKey)
         val checkpoint = history.size
         val note = if (interrupting) " [Ti ho interrotta mentre lavoravi: quello che dico ora corregge o sostituisce la richiesta di prima.]" else ""
-        val text = "${SystemPrompt.timeContext()}$note $userText"
+        val screen = options.screenContext?.let { " [Sullo schermo: $it]" }.orEmpty()
+        val text = "${SystemPrompt.timeContext()}$screen$note $userText"
         history += if (attachment == null) MessageParam.ofUser(text)
         else MessageParam.ofUserOfContentBlockParams(listOf(attachmentBlock(attachment), ContentBlockParam.ofText(TextBlockParam.builder().text(text).build())))
         // Se l'utente interrompe, si conserva tutto fino all'ultimo passaggio completato: così Memy sa cosa stava facendo.
@@ -238,7 +252,6 @@ class MemyAgent(
     private fun streamOnce(api: AnthropicClient, params: MessageCreateParams, spoken: StringBuilder, job: Job?): Message {
         val accumulator = MessageAccumulator.create()
         val held = ArrayList<String>()
-        var heldChars = 0
         var released = false
         var usedClientTool = false
         fun release() {
@@ -247,15 +260,10 @@ class MemyAgent(
             held.clear()
         }
         val splitter = SentenceSplitter { sentence ->
-            if (released) hooks.onSentence(sentence)
-            else {
-                held += sentence
-                heldChars += sentence.length
-                if (heldChars >= SPEAK_AFTER_CHARS) release()
-            }
+            if (released) hooks.onSentence(sentence) else held += sentence
         }
         fun discardNarration() {
-            held.clear(); heldChars = 0; released = false
+            held.clear(); released = false
             if (spoken.isNotEmpty()) {
                 spoken.setLength(0)
                 hooks.onText("")
@@ -285,8 +293,11 @@ class MemyAgent(
                     event.contentBlockDelta().ifPresent { d ->
                         d.delta().text().ifPresent { t ->
                             if (usedClientTool) return@ifPresent // testo dopo uno strumento: non si legge e non si mostra
+                            // Altro testo dopo una frase completa: è una risposta, non un «apro WhatsApp» prima di uno strumento.
+                            val afterSentence = held.isNotEmpty()
                             spoken.append(t.text())
                             splitter.feed(t.text())
+                            if (afterSentence && !released) release()
                             hooks.onText(spoken.toString().trim())
                         }
                     }
@@ -334,11 +345,12 @@ class MemyAgent(
     }
 
     /** Toglie i turni più vecchi (mai a metà di un turno) invece di dimenticare tutto di colpo. */
+    /**
+     * Con il ragionamento di Sonnet i messaggi precedenti non si possono modificare (l'API rifiuterebbe la richiesta):
+     * quando la cronologia diventa troppo lunga si riparte con una conversazione nuova. I ricordi restano.
+     */
     private fun trimHistory() {
-        if (history.size <= MAX_HISTORY) return
-        while (history.size > MAX_HISTORY / 2) history.removeAt(0)
-        // La cronologia deve iniziare con una domanda dell'utente, non con risultati di strumenti o una risposta.
-        while (history.isNotEmpty() && !(history[0].role() == MessageParam.Role.USER && history[0].content().isString())) history.removeAt(0)
+        if (history.size > MAX_HISTORY) history.clear()
     }
 
     /** I risultati per tutti gli strumenti chiesti: quelli eseguiti e, per gli altri, [missing]. */
@@ -382,7 +394,9 @@ class MemyAgent(
             return ToolResult.error("Parametri non validi: ${e.message}")
         }
         if (tool.name == ESCALATE || tool.name in SCREEN_TOOLS) escalate()
-        if (tool.name == ESCALATE) return ToolResult.ok("Ora sei il modello più capace: continua tu la richiesta.")
+        if (tool.name == ESCALATE) {
+            return ToolResult.ok(if (autoModel) "Ora sei il modello più capace: continua tu la richiesta." else "Sei già il modello scelto: continua.")
+        }
         hooks.onToolUse(tool.name)
         hooks.beforeTool()
         return try {
@@ -407,7 +421,7 @@ class MemyAgent(
         val builder = MessageCreateParams.builder()
             .model(model.id)
             .maxTokens(16000L)
-            .system(SystemPrompt.build(o.userName, o.webSearch, o.memories))
+            .system(SystemPrompt.build(o.userName, o.webSearch, conversationMemories ?: o.memories))
             .messages(history.toList())
             // Effort basso: risposte rapide, adatte alla conversazione a voce.
             .outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.LOW).build())
@@ -420,12 +434,13 @@ class MemyAgent(
             ClaudeModel.HAIKU -> builder.putAdditionalBodyProperty("thinking", JsonValue.from(mapOf("type" to "disabled")))
             else -> Unit
         }
-        // Lo strumento per "salire" a Sonnet serve solo a Haiku in modalità automatica.
-        toolDefs.filter { it.name() != ESCALATE || (autoModel && model == ClaudeModel.HAIKU) }.forEach { builder.addTool(it) }
+        // Elenco degli strumenti sempre uguale (anche think_harder): cambiarlo farebbe perdere la cache.
+        toolDefs.forEach { builder.addTool(it) }
         if (o.webSearch) {
             val location = UserLocation.builder()
                 .country(Locale.getDefault().country.ifBlank { "IT" })
                 .timezone(ZoneId.systemDefault().id)
+                .apply { o.city?.let { city(it) } }
                 .build()
             // Haiku usa la versione base della ricerca web; Opus e Sonnet quella con filtro dinamico dei risultati.
             if (model == ClaudeModel.HAIKU) {
@@ -484,8 +499,6 @@ class MemyAgent(
 
     companion object {
         private const val MAX_STEPS = 40
-        /** 0 = la prima frase si legge subito (scelta dell'utente per la velocità); se poi parte uno strumento la voce si ferma. */
-        const val SPEAK_AFTER_CHARS = 0
         const val ESCALATE = "think_harder"
         /** Usare le app sullo schermo richiede il modello più capace. */
         val SCREEN_TOOLS = setOf("read_screen", "look_at_screen", "tap_element", "tap_position", "type_text", "scroll")

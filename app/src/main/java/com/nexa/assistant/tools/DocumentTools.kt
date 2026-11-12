@@ -202,6 +202,14 @@ class ReadDocumentTool internal constructor(private val files: Files) : MemyTool
     private fun pdfPage(f: Found, page: Int): ToolResult {
         val pfd = f.uri?.let { files.ctx.contentResolver.openFileDescriptor(it, "r") }
             ?: ParcelFileDescriptor.open(f.file!!, ParcelFileDescriptor.MODE_READ_ONLY)
+        return pdfPageResult(pfd!!, page, f.name)
+    }
+
+    private companion object { const val MAX_CHARS = 30_000 }
+}
+
+/** Una pagina di un PDF come immagine, per farla "vedere" a Claude. */
+internal fun pdfPageResult(pfd: ParcelFileDescriptor, page: Int, name: String): ToolResult {
         pfd.use { fd ->
             android.graphics.pdf.PdfRenderer(fd).use { pdf ->
                 val n = pdf.pageCount
@@ -212,13 +220,10 @@ class ReadDocumentTool internal constructor(private val files: Files) : MemyTool
                     bmp.eraseColor(Color.WHITE)
                     p.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                     val jpeg = ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 80, it) }.toByteArray()
-                    return ToolResult("Pagina $page di $n di \"${f.name}\".", imageJpeg = jpeg)
+                    return ToolResult("Pagina $page di $n di \"$name\".", imageJpeg = jpeg)
                 }
             }
         }
-    }
-
-    private companion object { const val MAX_CHARS = 30_000 }
 }
 
 class ListDocumentsTool internal constructor(private val files: Files) : MemyTool {

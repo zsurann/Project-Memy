@@ -71,7 +71,10 @@ internal fun Context.hasPermission(p: String) =
 internal fun Context.launch(intent: Intent): Boolean = try {
     val access = MemyAccessibilityService.instance
     // Senza accessibilità e con Memy nascosta, Android blocca l'apertura in silenzio: meglio dirlo che fingere.
-    if (access == null && (applicationContext as? com.nexa.assistant.MemyApp)?.controller?.inForeground == false) {
+    // Da assistente predefinito Android di solito lascia aprire le app anche dal background.
+    if (access == null && (applicationContext as? com.nexa.assistant.MemyApp)?.controller?.inForeground == false &&
+        !com.nexa.assistant.AssistantRole.isHeld(this)
+    ) {
         throw IllegalStateException(NEED_FOREGROUND)
     }
     (access ?: this).startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
