@@ -120,6 +120,8 @@ class MemyController(private val app: MemyApp) {
     /** Claude sta ancora lavorando (a differenza di [job], che resta attivo finché Memy finisce di parlare). */
     private var agentBusy = false
     private var confirmation: CompletableDeferred<Boolean>? = null
+    /** Chiamata con «Ehi Memy»: finito l'incarico non resta in ascolto, a meno che non ti abbia fatto una domanda. */
+    private var wakeTurn = false
     private var sessionEndJob: Job? = null
 
     // Interruzione a voce: mentre Memy parla un rilevatore ascolta se inizi a parlare tu.
@@ -325,7 +327,7 @@ class MemyController(private val app: MemyApp) {
     /** Dopo una frase scartata: si riprende ad ascoltare le interruzioni, o la conversazione se Memy ha finito. */
     private fun afterIgnoredSpeech() {
         val idle = _state.value.phase == Phase.IDLE && !agentBusy && confirmation == null && !voice.speaking.value
-        if (idle && settings.state.value.continuousConversation && canListen()) startListening() else updateBarge()
+        if (idle && !wakeTurn && settings.state.value.continuousConversation && canListen()) startListening() else updateBarge()
     }
 
     private fun stopWorkListening() {
@@ -393,8 +395,9 @@ class MemyController(private val app: MemyApp) {
     /** Tocco sulla sfera: ascolta, interrompe la voce per parlare subito, oppure annulla. */
     fun onOrbPressed() {
         when (_state.value.phase) {
-            Phase.IDLE -> startListening()
+            Phase.IDLE -> { wakeTurn = false; startListening() }
             Phase.SPEAKING -> {
+                wakeTurn = false
                 job?.cancel(); stopWorkListening(); voice.stop(); agentBusy = false; finishStreamingLine()
                 _state.update { it.copy(phase = Phase.IDLE) }
                 startListening()
@@ -415,6 +418,7 @@ class MemyController(private val app: MemyApp) {
             return false
         }
         chime()
+        wakeTurn = true
         return startListening(recorder)
     }
 
@@ -574,7 +578,7 @@ class MemyController(private val app: MemyApp) {
                 // Stai già parlando (hai iniziato mentre finiva di lavorare): quella frase arriva da sola.
                 workStt != null -> Unit
                 // Conversazione continua: Memy torna ad ascoltarti, anche se sei in un'altra app.
-                settings.state.value.continuousConversation && canListen() -> startListening()
+                settings.state.value.continuousConversation && (!wakeTurn || reply.trimEnd().endsWith("?")) && canListen() -> startListening()
             }
         }
     }
@@ -622,6 +626,8 @@ class MemyController(private val app: MemyApp) {
     private suspend fun askConfirmation(prompt: String): Boolean {
         val deferred = CompletableDeferred<Boolean>()
         confirmation = deferred
+        // Risposta arrivata (tocco o voce): Memy smette subito di parlare e parte, senza finire la domanda.
+        deferred.invokeOnCompletion { voice.stop() }
         voice.awaitIdle()
         _state.update { it.copy(phase = Phase.CONFIRMING, pendingConfirmation = prompt) }
 
